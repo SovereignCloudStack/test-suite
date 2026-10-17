@@ -8,18 +8,31 @@ SPDX-License-Identifier: CC-BY-SA 4.0
 """
 
 from datetime import datetime
-import getopt
 import logging
 import os
 import os.path
 import sys
 import uuid
 
+import click
 import yaml
 
 from scs_0210_version_policy.k8s_version_policy import version_policy_check
 from sonobuoy_handler.sonobuoy_handler import SonobuoyHandler
+from plugin.run_plugin import init_plugin
 
+# this is a little hack-y: import scs_cert_lib from parent directory
+# TODO turn scs_cert_lib into a pip-package, then require it
+# (no need to put it in PyPI, though; it can be installed from within this repo)
+sys.path.insert(0, os.path.abspath('..'))
+from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report
+
+
+BASEDIR = os.path.dirname(__file__)
+DEFAULT_SPECPATH = os.path.join(BASEDIR, '..', 'scs-compatible-kaas.yaml')
+ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
+# sci for scs-compatible-kaas
+STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sck')
 
 PREFLIGHT_PSEUDO = "scs-0502-preflight"  # pseudo testcase to record preflight check abort
 TESTCASES = {
@@ -28,12 +41,9 @@ TESTCASES = {
     'version-policy-check': lambda config, _: version_policy_check(config.kubeconfig_path),
 }
 
-
-BASEDIR = os.path.dirname(__file__)
 SCS_SONOBUOY_CONFIG_PATH = os.path.join(BASEDIR, 'scs-sonobuoy-config-v1.yaml')
 
 logger = logging.getLogger(__name__)
-ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
 
 
 def _load_env_yaml_section(path, subject):
@@ -74,35 +84,6 @@ class Config:
         self.mode = 'serial'
         self.testcases = []
         self.env = {}
-
-    def apply_argv(self, argv):
-        """Parse cli arguments from the script call"""
-        try:
-            opts, args = getopt.gnu_getopt(argv, "k:s:", ("kubeconfig=", "subject=", "execution-mode="))
-        except getopt.GetoptError as exc:
-            print(f"CRITICAL: {exc!r}", file=sys.stderr)
-            usage(1)
-        for opt in opts:
-            if opt[0] == "-h" or opt[0] == "--help":
-                usage(0)
-            elif opt[0] == "-k" or opt[0] == "--kubeconfig":
-                self.kubeconfig_path = opt[1]
-            elif opt[0] == "-s" or opt[0] == "--subject":
-                self.subject = opt[1]
-            elif opt[0] == "--execution-mode":
-                self.mode = opt[1]
-            else:
-                usage(2)
-        if len(args) == 1 and args[0] == '-':
-            args = sys.stdin.read().splitlines()
-        self.testcases = [t for t in args if t in TESTCASES]
-        if len(self.testcases) != len(args):
-            unknown = [a for a in args if a not in self.testcases]
-            logger.warning(f"ignoring unknown testcases: {','.join(unknown)}")
-        if not self.subject:
-            print("CRITICAL: You need to pass -s=SUBJECT.", file=sys.stderr)
-            sys.exit(1)
-        self.setup()
 
     def setup(self):
         self.env = _load_env_yaml_section(path=ENVPATH, subject=self.subject)
@@ -186,28 +167,6 @@ class _LogHandler(logging.Handler):
         self.log.append(f'{record.levelname}: {record.getMessage()}')
 
 
-def main(argv):
-    # configure logging, disable verbose library logging
-    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
-
-    config = Config()
-    config.apply_argv(argv)
-
-    try:
-        run_preflight_checks(config.kubeconfig_path)
-    except Exception:
-        logger.critical("Pre-flight checks failed. Reporting all testcases as ABORT.")
-        for testcase in config.testcases:
-            print(f"{testcase}: ABORT")
-        raise
-
-    report = run_testcases(config)
-    # don't do explicit_start here because that can easily be done by the caller using "echo ---",
-    # and then the caller can even add fields such as uuid, subject, and scope
-    yaml.safe_dump(report, sys.stdout, default_flow_style=False, sort_keys=False, explicit_start=False)
-    return 0
-
-
 def run_testcases(config):
     log = []
     logging.root.addHandler(_LogHandler(level=logging.DEBUG, log=log))
@@ -228,11 +187,52 @@ def run_testcases(config):
     }
 
 
+@click.group()
+def cli():
+    return
+
+
+@cli.command()
+@click.option('--version', '-V', 'version', type=str, default=None)
+@click.option('--tests', '-t', 'tests', type=str, default=None)
+@click.option('--section', '-S', 'sections', type=str, multiple=True)
+@click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.option('--execution-mode', 'mode', type=click.Choice(('serial', 'parallel', 'dry')), default='serial')
+@click.argument('subject', type=str)
+def run(subject, specpath, version, sections, tests, monitor_url, mode):
+    title, all_testcase_ids = compile_testcases(
+        load_spec(specpath),
+        version=version, sections=sections, tests=tests,
+    )
+    logger.info(f"{title}: {len(all_testcase_ids)} testcases")
+    config = Config(subject)
+    config.statedir = STATE_PATH
+    config.testcases = all_testcase_ids
+    config.mode = mode
+    config.setup()
+    report = run_testcases(config)
+    enter_report(STATE_PATH, report, monitor_url)
+
+
+@cli.command()
+@click.argument('subject', type=str)
+def provision(subject):
+    """
+    create k8s clusters
+    """
+    init_plugin(subject, statedir=STATE_PATH).create_cluster()
+
+
+@cli.command()
+@click.argument('subject', type=str)
+def unprovision(subject):
+    """
+    clean up k8s clusters
+    """
+    init_plugin(subject, statedir=STATE_PATH).delete_cluster()
+
+
 if __name__ == "__main__":
-    try:
-        sys.exit(main(sys.argv[1:]))
-    except SystemExit:
-        raise
-    except BaseException as exc:
-        print(f"CRITICAL: {exc!r}", file=sys.stderr)
-        sys.exit(1)
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+    cli()

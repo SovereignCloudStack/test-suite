@@ -8,12 +8,12 @@ SPDX-License-Identifier: CC-BY-SA 4.0
 """
 
 from datetime import datetime
-import getopt
 import logging
 import os.path
 import sys
 import uuid
 
+import click
 import openstack
 import yaml
 
@@ -51,10 +51,21 @@ from scs_0117_volume_backup.volume_backup import \
 from scs_0123_mandatory_services.mandatory_services import \
     compute_scs_0123_service_presence, compute_scs_0123_swift_s3
 
+# this is a little hack-y: import scs_cert_lib from parent directory
+# TODO turn scs_cert_lib into a pip-package, then require it
+# (no need to put it in PyPI, though; it can be installed from within this repo)
+sys.path.insert(0, os.path.abspath('..'))
+from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report
+
+
+BASEDIR = os.path.dirname(__file__)
+ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
+DEFAULT_SPECPATH = os.path.join(BASEDIR, '..', 'scs-compatible-iaas.yaml')
+# sci for scs-compatible-iaas
+STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sci')
 
 logger = logging.getLogger(__name__)
 PREFLIGHT_PSEUDO = "scs-0501-preflight"  # pseudo testcase to record preflight check abort
-ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
 PREFIX = "_scs-"  # used for cleanup: only remove objects whose name starts in PREFIX
 IPADDR = "10.1.0."  # used for cleanup: only remove network objects within IPADDR
 
@@ -313,41 +324,6 @@ class _LogHandler(logging.Handler):
         self.log.append(f'{record.levelname}: {record.getMessage()}')
 
 
-def main(argv):
-    # configure logging, disable verbose library logging
-    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
-    openstack.enable_logging(debug=False)
-    cloud = None
-    subject = None
-
-    try:
-        opts, args = getopt.gnu_getopt(argv, "c:C:s:S:", ("os-cloud=", "subject="))
-    except getopt.GetoptError as exc:
-        print(f"CRITICAL: {exc!r}", file=sys.stderr)
-        usage(1)
-    for opt in opts:
-        if opt[0] == "-h" or opt[0] == "--help":
-            usage(0)
-        elif opt[0] == "-c" or opt[0] == "--os-cloud":
-            cloud = opt[1]
-        elif opt[0] == "-s" or opt[0] == "--subject":
-            subject = opt[1]
-        else:
-            usage(2)
-
-    if len(args) == 1 and args[0] == '-':
-        args = sys.stdin.read().splitlines()
-
-    if not subject:
-        print("CRITICAL: You need to pass -s=SUBJECT.", file=sys.stderr)
-        sys.exit(1)
-    report = run_testcases(subject, args, cloud=cloud)
-    # don't do explicit_start here because that can easily be done by the caller using "echo ---",
-    # and then the caller can even add fields such as uuid, subject, and scope
-    yaml.safe_dump(report, sys.stdout, default_flow_style=False, sort_keys=False, explicit_start=False)
-    return 0
-
-
 def run_testcases(subject, testcases, *, cloud=None):
     c = make_container(subject, cloud=cloud)
     log = []
@@ -369,11 +345,38 @@ def run_testcases(subject, testcases, *, cloud=None):
     }
 
 
+@click.group()
+def cli():
+    return
+
+
+@cli.command()
+@click.option('--version', '-V', 'version', type=str, default=None)
+@click.option('--tests', '-t', 'tests', type=str, default=None)
+@click.option('--section', '-S', 'sections', type=str, multiple=True)
+@click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.argument('subject', type=str)
+def run(subject, specpath, version, sections, tests, monitor_url):
+    title, all_testcase_ids = compile_testcases(
+        load_spec(specpath),
+        version=version, sections=sections, tests=tests,
+    )
+    logger.info(f"{title}: {len(all_testcase_ids)} testcases")
+    report = run_testcases(subject, all_testcase_ids)
+    enter_report(STATE_PATH, report, monitor_url)
+
+
+@cli.command()
+@click.argument('subject', type=str)
+def cleanup(subject):
+    """
+    clean up any lingering IaaS resources
+    """
+    run_testcases(subject, ('cleanup', ))
+
+
 if __name__ == "__main__":
-    try:
-        sys.exit(main(sys.argv[1:]))
-    except SystemExit:
-        raise
-    except BaseException as exc:
-        print(f"CRITICAL: {exc!r}", file=sys.stderr)
-        sys.exit(1)
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.DEBUG)
+    openstack.enable_logging(debug=False)
+    cli()
