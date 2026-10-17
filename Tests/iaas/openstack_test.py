@@ -7,7 +7,6 @@
 SPDX-License-Identifier: CC-BY-SA 4.0
 """
 
-from datetime import datetime
 import logging
 import os.path
 import sys
@@ -15,7 +14,6 @@ import uuid
 
 import click
 import openstack
-import yaml
 
 from cleanup import Janitor
 from scs_0100_flavor_naming.flavor_names import compute_flavor_spec
@@ -55,11 +53,11 @@ from scs_0123_mandatory_services.mandatory_services import \
 # TODO turn scs_cert_lib into a pip-package, then require it
 # (no need to put it in PyPI, though; it can be installed from within this repo)
 sys.path.insert(0, os.path.abspath('..'))
-from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report
+from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
+    load_env_yaml_section, attest, LogHandler
 
 
 BASEDIR = os.path.dirname(__file__)
-ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
 DEFAULT_SPECPATH = os.path.join(BASEDIR, '..', 'scs-compatible-iaas.yaml')
 # sci for scs-compatible-iaas
 STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sci')
@@ -84,24 +82,11 @@ and reports inconsistencies, errors etc. It returns 0 on success.
     sys.exit(rcode)
 
 
-def _load_env_yaml_section(path, subject):
-    if not os.path.isfile(path):
-        return {}
-    with open(path, "rb") as fileobj:
-        env_yaml = yaml.load(fileobj, Loader=yaml.SafeLoader)
-    if not isinstance(env_yaml, dict):
-        raise RuntimeError("env.yaml config file available, but not of type dict!")
-    result = env_yaml.get(subject, {})
-    if not result:
-        logger.debug("env.yaml config file available, but no values declared.")
-    return result
-
-
 def make_container(subject, cloud=None):
     c = Container()
     c.add_value('subject', subject)
     # env.yaml support
-    c.add_function('env', lambda _: _load_env_yaml_section(path=ENVPATH, subject=subject))
+    c.add_function('env', lambda _: load_env_yaml_section(subject=subject))
     c.add_function('cloud', lambda c: c.env.get('cloud', subject) if cloud is None else cloud)
     # Configure an optional list of DNS servers for scs-0101-entropy
     c.add_function('dns_nameservers', lambda c: c.env.get('dns_nameservers'))
@@ -258,34 +243,6 @@ class Container:
         self._values[name] = value
 
 
-def attest(subject, name, *check_fns):
-    """Harness for evaluating testcase `name`.
-
-    Logs beginning and end of computation.
-    Calls each fn in `check_fns`.
-    Returns attestation dict.
-    """
-    guid = str(uuid.uuid4())
-    timestamp = datetime.now()
-    logger.info(f'*** {subject}/{name} ({guid})')
-    try:
-        result = all(check_fn() for check_fn in check_fns)
-    except BaseException:
-        logger.debug('exception during check', exc_info=True)
-        value = 0
-    else:
-        value = 1 if result else -1
-    result = ['fail', 'dnf', 'pass'][value + 1]
-    logger.info(f'+++ {subject}/{name}: {result.upper()}')
-    return {
-        'guid': guid,
-        'timestamp': timestamp,
-        'subject': subject,
-        'predicate': result,
-        'object': name,
-    }
-
-
 def run_preflight_checks(container, testcases):
     # make sure that we can connect to the cloud and that the user doesn't have elevated privileges
     # the former would lead to each testcase aborting with a marginally useful message;
@@ -315,19 +272,10 @@ def run_preflight_checks(container, testcases):
     return True
 
 
-class _LogHandler(logging.Handler):
-    def __init__(self, level=logging.NOTSET, log=None):
-        super().__init__(level=level)
-        self.log = [] if log is None else log
-
-    def handle(self, record):
-        self.log.append(f'{record.levelname}: {record.getMessage()}')
-
-
 def run_testcases(subject, testcases, *, cloud=None):
     c = make_container(subject, cloud=cloud)
     log = []
-    logging.root.addHandler(_LogHandler(level=logging.DEBUG, log=log))
+    logging.root.addHandler(LogHandler(level=logging.DEBUG, log=log))
 
     attestations = [
         attest(subject, PREFLIGHT_PSEUDO, lambda: run_preflight_checks(c, testcases)),

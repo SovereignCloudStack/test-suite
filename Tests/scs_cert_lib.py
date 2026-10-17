@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 
 import yaml
 
@@ -21,6 +22,7 @@ import yaml
 logger = logging.getLogger(__name__)
 MONITOR_URL = "http://localhost"  # "https://compliance.sovereignit.cloud/"
 CONFIG_PATH = os.path.join(os.path.expanduser('~'), '.config', 'scs')
+ENVPATH = os.path.join(CONFIG_PATH, 'env.yaml')
 KEYFILE_PATH = os.path.join(CONFIG_PATH, '.secret', 'keyfile')
 TOKENFILE_PATH = os.path.join(CONFIG_PATH, '.secret', 'tokenfile')
 
@@ -31,6 +33,56 @@ KEYWORDS = {
     'testcases': ('section', 'id', 'description', 'url', 'components'),
     'include': ('ref', 'lifetime'),
 }
+
+
+class LogHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET, log=None):
+        super().__init__(level=level)
+        self.log = [] if log is None else log
+
+    def handle(self, record):
+        self.log.append(f'{record.levelname}: {record.getMessage()}')
+
+
+def load_env_yaml_section(subject, path=ENVPATH):
+    if not os.path.isfile(path):
+        return {}
+    with open(path, "rb") as fileobj:
+        env_yaml = yaml.load(fileobj, Loader=yaml.SafeLoader)
+    if not isinstance(env_yaml, dict):
+        raise RuntimeError("env.yaml config file available, but not of type dict!")
+    result = env_yaml.get(subject, {})
+    if not result:
+        logger.debug("env.yaml config file available, but no values declared.")
+    return result
+
+
+def attest(subject, name, *check_fns):
+    """Harness for evaluating testcase `name`.
+
+    Logs beginning and end of computation.
+    Calls each fn in `check_fns`.
+    Returns attestation dict.
+    """
+    guid = str(uuid.uuid4())
+    timestamp = datetime.now()
+    logger.info(f'*** {subject}/{name} ({guid})')
+    try:
+        result = all(check_fn() for check_fn in check_fns)
+    except BaseException:
+        logger.debug('exception during check', exc_info=True)
+        value = 0
+    else:
+        value = 1 if result else -1
+    result = ['fail', 'dnf', 'pass'][value + 1]
+    logger.info(f'+++ {subject}/{name}: {result.upper()}')
+    return {
+        'guid': guid,
+        'timestamp': timestamp,
+        'subject': subject,
+        'predicate': result,
+        'object': name,
+    }
 
 
 def _check_keywords(ctx, d, keywords=KEYWORDS):

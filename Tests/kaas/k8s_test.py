@@ -7,7 +7,6 @@
 SPDX-License-Identifier: CC-BY-SA 4.0
 """
 
-from datetime import datetime
 import logging
 import os
 import os.path
@@ -15,7 +14,6 @@ import sys
 import uuid
 
 import click
-import yaml
 
 from scs_0210_version_policy.k8s_version_policy import version_policy_check
 from sonobuoy_handler.sonobuoy_handler import SonobuoyHandler
@@ -25,12 +23,12 @@ from plugin.run_plugin import init_plugin
 # TODO turn scs_cert_lib into a pip-package, then require it
 # (no need to put it in PyPI, though; it can be installed from within this repo)
 sys.path.insert(0, os.path.abspath('..'))
-from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report
+from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
+    load_env_yaml_section, attest, LogHandler
 
 
 BASEDIR = os.path.dirname(__file__)
 DEFAULT_SPECPATH = os.path.join(BASEDIR, '..', 'scs-compatible-kaas.yaml')
-ENVPATH = os.path.join(os.path.expanduser('~'), '.config', 'scs', 'env.yaml')
 # sci for scs-compatible-kaas
 STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sck')
 
@@ -44,19 +42,6 @@ TESTCASES = {
 SCS_SONOBUOY_CONFIG_PATH = os.path.join(BASEDIR, 'scs-sonobuoy-config-v1.yaml')
 
 logger = logging.getLogger(__name__)
-
-
-def _load_env_yaml_section(path, subject):
-    if not os.path.isfile(path):
-        return {}
-    with open(path, "rb") as fileobj:
-        env_yaml = yaml.load(fileobj, Loader=yaml.SafeLoader)
-    if not isinstance(env_yaml, dict):
-        raise RuntimeError("env.yaml config file available, but not of type dict!")
-    result = env_yaml.get(subject, {})
-    if not result:
-        logger.debug("env.yaml config file available, but no values declared.")
-    return result
 
 
 def usage(rcode=1, file=sys.stderr):
@@ -86,7 +71,7 @@ class Config:
         self.env = {}
 
     def setup(self):
-        self.env = _load_env_yaml_section(path=ENVPATH, subject=self.subject)
+        self.env = load_env_yaml_section(self.subject)
         if not self.kubeconfig_path:
             default = os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
             self.kubeconfig_path = self.env.get('kubeconfig', default)
@@ -112,34 +97,6 @@ def run_sono(config, testcase, *args):
     return return_code == 0
 
 
-def attest(subject, name, *check_fns):
-    """Harness for evaluating testcase `name`.
-
-    Logs beginning and end of computation.
-    Calls each fn in `check_fns`.
-    Returns attestation dict.
-    """
-    guid = str(uuid.uuid4())
-    timestamp = datetime.now()
-    logger.info(f'*** {subject}/{name} ({guid})')
-    try:
-        result = all(check_fn() for check_fn in check_fns)
-    except BaseException:
-        logger.debug('exception during check', exc_info=True)
-        value = 0
-    else:
-        value = 1 if result else -1
-    result = ['fail', 'dnf', 'pass'][value + 1]
-    logger.info(f'+++ {subject}/{name}: {result.upper()}')
-    return {
-        'guid': guid,
-        'timestamp': timestamp,
-        'subject': subject,
-        'predicate': result,
-        'object': name,
-    }
-
-
 def run_preflight_checks(config):
     # ideally, make sure that we can connect to the cloud
     # here, at least check that the file exists
@@ -158,18 +115,9 @@ def run_preflight_checks(config):
     return True
 
 
-class _LogHandler(logging.Handler):
-    def __init__(self, level=logging.NOTSET, log=None):
-        super().__init__(level=level)
-        self.log = [] if log is None else log
-
-    def handle(self, record):
-        self.log.append(f'{record.levelname}: {record.getMessage()}')
-
-
 def run_testcases(config):
     log = []
-    logging.root.addHandler(_LogHandler(level=logging.DEBUG, log=log))
+    logging.root.addHandler(LogHandler(level=logging.DEBUG, log=log))
 
     attestations = [
         attest(config.subject, PREFLIGHT_PSEUDO, lambda: run_preflight_checks(config)),
