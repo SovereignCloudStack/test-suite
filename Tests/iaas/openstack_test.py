@@ -54,7 +54,8 @@ from scs_0123_mandatory_services.mandatory_services import \
 # (no need to put it in PyPI, though; it can be installed from within this repo)
 sys.path.insert(0, os.path.abspath('..'))
 from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
-    load_env_yaml_section, attest, LogHandler
+    load_env_yaml_section, attest, LogHandler, augment_scores, select_versions, \
+    Aggregator
 
 
 BASEDIR = os.path.dirname(__file__)
@@ -149,7 +150,7 @@ def make_container(subject, cloud=None):
     c.add_function('scs-0104-source-ubuntu-2204', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Ubuntu 22.04']))
     c.add_function('scs-0104-source-ubuntu-2004', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Ubuntu 20.04']))
     c.add_function('scs-0104-source-debian', lambda c: compute_scs_0104_source_ex(c.image_lookup_ex, 'debian'))
-    c.add_function('scs-0104-source-debian_13', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Debian 13']))
+    c.add_function('scs-0104-source-debian-13', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Debian 13']))
     c.add_function('scs-0104-source-debian-12', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Debian 12']))
     c.add_function('scs-0104-source-debian-11', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Debian 11']))
     c.add_function('scs-0104-source-debian-10', lambda c: compute_scs_0104_source(c.image_lookup, SCS_0104_IMAGE_SPECS['Debian 10']))
@@ -313,6 +314,33 @@ def run(subject, specpath, version, sections, tests, monitor_url):
     logger.info(f"{title}: {len(all_testcase_ids)} testcases")
     report = run_testcases(subject, all_testcase_ids)
     enter_report(STATE_PATH, report, monitor_url)
+
+
+@cli.command()
+@click.option('--version', '-V', 'version', type=str, default=None)
+@click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.argument('subjects', required=True, nargs=-1, type=str)
+def aggregate(subjects, specpath, version, monitor_url):
+    """
+    update scores from cm
+    """
+    spec = load_spec(specpath)
+    versions = select_versions(spec, version)
+    scores = augment_scores(STATE_PATH, subjects[0], monitor_url)
+
+    a = Aggregator(scores)
+    for version in versions:
+        if len(subjects) > 1:
+            for subject in subjects[1:]:
+                # compute {subject}/{version.object}
+                a.aggregate_version(subject, version)
+            # compute {subject[0]}/{version.object}
+            a.aggregate_subjects(version['object']['id'], subjects)
+        else:
+            a.aggregate_version(subjects[0], version)
+
+    enter_report(STATE_PATH, a.make_report(), monitor_url)
 
 
 @cli.command()

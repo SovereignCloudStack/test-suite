@@ -592,4 +592,4 @@ versions:
     object: scs-0501-v6
   - version: v5.1  # copy of v5, but with include "scs-0123-v1", which had simply been forgotten
     stabilized_at: 2024-12-19
-    object: scs-0501-v6
+    object: scs-0501-v5.1

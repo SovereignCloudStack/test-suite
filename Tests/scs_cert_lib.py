@@ -6,7 +6,6 @@
 # (c) Matthias Büchse <matthias.buechse@cloudandheat.com>
 # SPDX-License-Identifier: Apache-2.0
 
-from collections import defaultdict
 from datetime import datetime, date, timedelta
 import logging
 import os.path
@@ -16,6 +15,7 @@ import subprocess
 import tempfile
 import uuid
 
+import json
 import yaml
 
 
@@ -241,33 +241,89 @@ def add_period(dt: datetime, period: str) -> datetime:
     raise RuntimeError(f'unknown period: {period}')
 
 
-def eval_buckets(results, testcase_ids) -> dict:
+def eval_buckets(attestations, keys) -> dict:
     """
     returns buckets of test cases by means of a mapping
     """
-    by_value = defaultdict(list)
-    for testcase_id in testcase_ids:
-        value = results.get(testcase_id, {})
-        if isinstance(value, dict):
-            value = value.get('result')
-        by_value[value].append(testcase_id)
+    by_value = {}
+    for key in keys:
+        att = attestations.get(key)
+        if att is None:
+            att = {'predicate': 'miss', 'key': key}
+        by_value.setdefault(att['predicate'], []).append(att)
     return by_value
 
 
-def evaluate(results, testcase_ids) -> int:
-    """returns overall result"""
-    buckets = eval_buckets(results, testcase_ids)
-    for value in ('fail', None, 'dnf'):
-        if buckets[value]:
-            return value
-    return 'pass'
+def _patch_missing(attestations, key, **kwargs):
+    for att in attestations:
+        if 'key' not in att:
+            # this can happen when an attestation is explicitly filed as missing
+            # e.g., when it was constructed by `_do_aggregate_objects`
+            continue
+        kwargs[key] = att.pop('key')
+        att.update(**kwargs)
+
+
+class Aggregator:
+    def __init__(self, scores):
+        self.scores = scores
+        self.attestations = []
+        self.attachments = {}
+
+    def aggregate_slice(self, subject, object_, slice_, keys, key):
+        scores = self.scores
+        if object_ in scores.setdefault(subject, {}):
+            timestamp = scores[subject][object_]['timestamp']
+            latest = max([slice_.get(k, {}).get('timestamp', timestamp) for k in keys])
+            if latest <= timestamp:
+                logger.debug(f'{subject}/{object_} already current at {timestamp}; latest {latest}')
+                return
+        guid = str(uuid.uuid4())
+        logger.info(f'*** {subject}/{object_} ({guid})')
+        buckets = eval_buckets(slice_, keys)
+        _patch_missing(buckets.get('miss', ()), key=key, subject=subject, object=object_)
+        self.attachments[guid] = buckets
+        predicates = [p for p in ('fail', 'miss', 'dnf', 'pass') if buckets.get(p)]
+        result = predicates[0]
+        logger.info(f'+++ {subject}/{object_}: {result.upper()}')
+        att = {
+            'guid': guid,
+            'timestamp': datetime.now(),
+            'subject': subject,
+            'predicate': result,
+            'object': object_,
+        }
+        self.attestations.append(att)
+        scores[subject][object_] = att
+
+    def aggregate_version(self, subject, version):
+        scores = self.scores
+        object_, keys = version['object']['id'], version['testcase_ids']
+        scores.setdefault(subject, {})
+        slice_ = {key: scores[subject][key] for key in keys if key in scores[subject]}
+        self.aggregate_slice(subject, object_, slice_, keys, 'object')
+
+    def aggregate_subjects(self, object_, subjects):
+        scores = self.scores
+        subject, keys = subjects[0], subjects[1:]
+        slice_ = {key: scores[key][object_] for key in keys if object_ in scores[key]}
+        self.aggregate_slice(subject, object_, slice_, keys, 'subject')
+
+    def make_report(self):
+        return {
+            'uuid': str(uuid.uuid4()),
+            'creator': 'scs_cert_lib.py v0.1.0',
+            'attestations': self.attestations,
+            'log': [],
+            'attachments': self.attachments,
+        }
 
 
 def select_valid(versions: list) -> list:
     return [version for version in versions if version['_explicit_validity']]
 
 
-def compile_testcases(spec, version=None, tests=None, sections=None, checkdate=None):
+def select_versions(spec, version=None, checkdate=None):
     if checkdate is None:
         checkdate = date.today()
     annotate_validity(spec['timeline'], spec['versions'], checkdate)
@@ -279,6 +335,11 @@ def compile_testcases(spec, version=None, tests=None, sections=None, checkdate=N
             raise RuntimeError(f"Requested version '{version}' not found")
     if not versions:
         raise RuntimeError(f"No valid version found for {checkdate}")
+    return versions
+
+
+def compile_testcases(spec, version=None, tests=None, sections=None, checkdate=None):
+    versions = select_versions(spec, version, checkdate)
     title = spec['name']
     if sections:
         title += f" [sections: {', '.join(sections)}]"
@@ -326,6 +387,21 @@ def upload_report(target_path, monitor_url=MONITOR_URL):
     ]).returncode
 
 
+def download_scores(subject, monitor_url=MONITOR_URL):
+    result = subprocess.run([
+        shutil.which('curl'),
+        f"{monitor_url.removesuffix('/')}/status?subject={subject}",
+    ], capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f"could not download scores: {result.stderr}")
+    remotescores = json.loads(result.stdout)
+    # unfortunately, we have to patch the remote scorecard because json doesn't to datetime
+    for sc_att in remotescores.values():
+        for att in sc_att.values():
+            att['timestamp'] = datetime.fromisoformat(att['timestamp'])
+    return remotescores
+
+
 def dump_yaml(o):
     return yaml.safe_dump(o, default_flow_style=False, sort_keys=False, explicit_start=True)
 
@@ -366,7 +442,7 @@ def enter_report(statepath, report, monitor_url=MONITOR_URL):
     # update local scores
     scorepath = os.path.join(statepath, 'scorecard.yaml')
     scorecard = load_scores(scorepath)
-    update_scorecard(scorecard, report)
+    update_scorecard_from_report(scorecard, report)
     write_yaml(scorepath, scorecard)
     # prune local reports
     prune_reports(statepath, scorecard)
@@ -376,13 +452,23 @@ def load_scores(scorepath):
     return load_yaml(scorepath, default={})
 
 
-def update_scorecard(scorecard, report):
-    uuid = report['uuid']
-    for attestation in report['attestations']:
+def update_scorecard(scorecard, attestations, report_uuid=None):
+    for attestation in attestations:
         subject, object_ = attestation['subject'], attestation['object']
         contender = scorecard.setdefault(subject, {}).setdefault(object_, {})
         if not contender or contender['timestamp'] < attestation['timestamp']:
-            contender.update(**attestation, report=uuid)
+            contender.update(**attestation)
+            if report_uuid:
+                contender['report'] = report_uuid
+
+
+def update_scorecard_from_report(scorecard, report):
+    update_scorecard(scorecard, report['attestations'], report['uuid'])
+
+
+def update_scorecard_from_scorecard(scorecard, sc_b):
+    attestations = (att for sc_att in sc_b.values() for att in sc_att.values())
+    update_scorecard(scorecard, attestations)
 
 
 def prune_reports(statepath, scorecard):
@@ -401,3 +487,12 @@ def prune_reports(statepath, scorecard):
             continue
         logger.info(f"Pruning {fn!s}")
         os.unlink(os.path.join(statepath, fn))
+
+
+def augment_scores(statepath, subject, monitor_url=MONITOR_URL):
+    remotescores = download_scores(subject, monitor_url=MONITOR_URL)
+    scorepath = os.path.join(statepath, 'scorecard.yaml')
+    scorecard = load_scores(scorepath)
+    update_scorecard_from_scorecard(scorecard, remotescores)
+    write_yaml(scorepath, scorecard)
+    return scorecard

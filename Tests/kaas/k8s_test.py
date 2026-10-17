@@ -24,7 +24,8 @@ from plugin.run_plugin import init_plugin
 # (no need to put it in PyPI, though; it can be installed from within this repo)
 sys.path.insert(0, os.path.abspath('..'))
 from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
-    load_env_yaml_section, attest, LogHandler
+    load_env_yaml_section, attest, LogHandler, select_versions, augment_scores, \
+    Aggregator
 
 
 BASEDIR = os.path.dirname(__file__)
@@ -161,6 +162,33 @@ def run(subject, specpath, version, sections, tests, monitor_url, mode):
     config.setup()
     report = run_testcases(config)
     enter_report(STATE_PATH, report, monitor_url)
+
+
+@cli.command()
+@click.option('--version', '-V', 'version', type=str, default=None)
+@click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.argument('subjects', required=True, nargs=-1, type=str)
+def aggregate(subjects, specpath, version, monitor_url):
+    """
+    update scores from cm
+    """
+    spec = load_spec(specpath)
+    versions = select_versions(spec, version)
+    scores = augment_scores(STATE_PATH, subjects[0], monitor_url)
+
+    a = Aggregator(scores)
+    for version in versions:
+        if len(subjects) > 1:
+            for subject in subjects[1:]:
+                # compute {subject}/{version.object}
+                a.aggregate_version(subject, version)
+            # compute {subject[0]}/{version.object}
+            a.aggregate_subjects(version['object']['id'], subjects)
+        else:
+            a.aggregate_version(subjects[0], version)
+
+    enter_report(STATE_PATH, a.make_report(), monitor_url)
 
 
 @cli.command()
