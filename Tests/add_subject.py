@@ -15,6 +15,8 @@ import signal
 import subprocess
 import sys
 
+from scs_cert_lib import KEYFILE_PATH, TOKENFILE_PATH
+
 try:
     from passlib.context import CryptContext
     import argon2  # noqa:F401
@@ -28,13 +30,11 @@ SSH_KEYGEN = shutil.which('ssh-keygen')
 SUBJECT_RE = re.compile(r"[a-zA-Z0-9_\-]+")
 
 
-def main(argv, cwd):
+def main(argv, cwd, keyfile_path=KEYFILE_PATH, tokenfile_path=TOKENFILE_PATH):
     if len(argv) != 1:
         raise RuntimeError("Need to supply precisely one argument: name of subject")
     subject = argv[0]
     print(f"Attempt to add subject {subject!r}")
-    keyfile_path = os.path.join(cwd, '.secret', 'keyfile')
-    tokenfile_path = os.path.join(cwd, '.secret', 'tokenfile')
     if os.path.exists(keyfile_path):
         raise RuntimeError(f"Keyfile {keyfile_path} already present. Please proceed manually")
     if os.path.exists(tokenfile_path):
