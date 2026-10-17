@@ -60,7 +60,7 @@ from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report
 
 
 BASEDIR = os.path.dirname(__file__)
-DEFAULT_SPECPATH = os.path.join(BASEDIR, '..', 'scs-compatible-iaas.yaml')
+DEFAULT_SPECPATH = os.path.join(BASEDIR, 'scs-compatible-iaas.yaml')
 # sci for scs-compatible-iaas
 STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sci')
 
