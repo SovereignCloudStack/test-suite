@@ -1,6 +1,4 @@
 -c requirements.txt
--c iaas/requirements.txt
--c kaas/requirements.txt
 pytest
 pytest-asyncio
 pytest-cov
