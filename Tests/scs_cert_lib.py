@@ -9,23 +9,28 @@
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 import logging
+import os.path
+import re
+import shutil
+import subprocess
+import tempfile
+
+import yaml
 
 
 logger = logging.getLogger(__name__)
+MONITOR_URL = "http://localhost"  # "https://compliance.sovereignit.cloud/"
+CONFIG_PATH = os.path.join(os.path.expanduser('~'), '.config', 'scs')
+KEYFILE_PATH = os.path.join(CONFIG_PATH, '.secret', 'keyfile')
+TOKENFILE_PATH = os.path.join(CONFIG_PATH, '.secret', 'tokenfile')
 
 # valid keywords for various parts of the spec, to be checked using `check_keywords`
 KEYWORDS = {
-    'spec': ('uuid', 'name', 'url', 'versions', 'prerequisite', 'variables', 'scripts', 'modules', 'timeline'),
-    'scripts': ('executable', 'env', 'args', 'testcases'),
-    'versions': ('version', 'include', 'targets', 'stabilized_at'),
-    'modules': ('id', 'targets', 'url', 'name', 'parameters'),
-    'testcases': ('lifetime', 'section', 'id', 'description', 'url'),
-    'include': ('ref', 'parameters'),
+    'spec': ('uuid', 'name', 'url', 'versions', 'testcases', 'timeline'),
+    'versions': ('version', 'object', 'stabilized_at'),
+    'testcases': ('section', 'id', 'description', 'url', 'components'),
+    'include': ('ref', 'lifetime'),
 }
-# The canonical result values are -1, 0, and 1, for FAIL, ABORT, and PASS, respectively;
-# -- in addition, None is used to encode a missing value, but must not be included in a formal report! --
-# these concrete numbers are important because we do rely on their ordering.
-TESTCASE_VERDICTS = {'PASS': 1, 'ABORT': 0, 'FAIL': -1}
 
 
 def _check_keywords(ctx, d, keywords=KEYWORDS):
@@ -49,6 +54,22 @@ def _check_keywords(ctx, d, keywords=KEYWORDS):
     return len(invalid) + sum(_check_keywords(k, v, keywords=keywords) for k, v in d.items())
 
 
+def _collect_atomic_testcases(object_, result_list):
+    components = object_.get('components')
+    if components is None:
+        result_list.append(object_)
+        return
+    for child in components:
+        _collect_atomic_testcases(child['ref'], result_list)
+
+
+def collect_atomic_testcases(*objects):
+    result_list = []
+    for object_ in objects:
+        _collect_atomic_testcases(object_, result_list)
+    return result_list
+
+
 def _resolve_spec(spec: dict):
     """rewire `spec` so as to make most lookups via name unnecessary, and to find name errors early"""
     if isinstance(spec['versions'], dict):
@@ -58,70 +79,50 @@ def _resolve_spec(spec: dict):
     # - versions, referenced by name (unfortunately, the field is called "version")
     # step 1. build lookups
     testcase_lookup = {}
-    tc_script_lookup = {}
-    for idx, script in enumerate(spec.get('scripts', ())):
-        script['_idx'] = idx
-        for testcase in script.get('testcases', ()):
-            id_ = testcase['id']
-            if id_ in testcase_lookup:
-                raise RuntimeError(f"duplicate testcase {id_}")
-            testcase['attn'] = 0  # count: how many stable versions list this in target 'main'?
-            testcase_lookup[id_] = testcase
-            tc_script_lookup[id_] = script
-    module_lookup = {module['id']: module for module in spec['modules']}
+    testcases = spec.get('testcases', ())
+    for testcase in testcases:
+        id_ = testcase['id']
+        if id_ in testcase_lookup:
+            raise RuntimeError(f"duplicate testcase {id_}")
+        testcase['attn'] = 0  # count: how many stable versions list this in target 'main'?
+        testcase_lookup[id_] = testcase
     version_lookup = {version['version']: version for version in spec['versions']}
     # step 2. check for duplicates:
-    if len(module_lookup) != len(spec['modules']):
-        raise RuntimeError("spec contains duplicate module ids")
     if len(version_lookup) != len(spec['versions']):
         raise RuntimeError("spec contains duplicate version ids")
     # step 3. replace fields 'modules' and 'versions' by respective lookups
-    spec['modules'] = module_lookup
     spec['versions'] = version_lookup
     # step 3a. add testcase lookup
     spec['testcases'] = testcase_lookup
-    spec['tc_scripts'] = tc_script_lookup
     # step 4. resolve references
-    # step 4a. resolve references to modules in includes
+    # step 4a. resolve references to testcases in components
     # in this step, we also normalize the include form
+    for testcase in testcases:
+        components = testcase.get('components')
+        if not components:
+            continue
+        testcase['components'] = [
+            {'ref': testcase_lookup[inc], 'lifetime': None} if isinstance(inc, str) else
+            {**inc, 'ref': testcase_lookup[inc['ref']]}
+            for inc in components
+        ]
+    # step 4b. resolve 'object' in versions, collect all atomic testcases
     for idx, version in enumerate(spec['versions'].values()):
         version['_idx'] = idx
-        version['include'] = [
-            {'module': module_lookup[inc], 'parameters': {}} if isinstance(inc, str) else
-            {'module': module_lookup[inc['ref']], 'parameters': inc.get('parameters', {})}
-            for inc in version['include']
-        ]
-        targets = defaultdict(set)
-        for inc in version['include']:
-            for target, tc_ids in inc['module'].get('targets', {}).items():
-                targets[target].update(tc_ids)
-        tc_target = {}
-        for target, tc_ids in targets.items():
-            for tc_id in tc_ids:
-                tc_target[tc_id] = target
-        if version.get('stabilized_at'):
-            for tc_id in targets.get('main', ()):
-                testcase_lookup[tc_id]['attn'] += 1
-        version['targets'] = {target: sorted(tc_ids) for target, tc_ids in targets.items()}
-        version['tc_target'] = tc_target
-    # step 4b. resolve references to versions in timeline
+        object_ = testcase_lookup[version['object']]
+        testcases = collect_atomic_testcases(object_)
+        attn = 0 if 'stabilized_at' not in version else 1
+        for testcase in testcases:
+            testcase['attn'] += attn
+        version['object'] = object_
+        version['testcase_ids'] = [testcase['id'] for testcase in testcases]
+    # step 4c. resolve references to versions in timeline
     # on second thought, let's not go there: it's a canonical extension map, and it should remain that way.
     # however, we still have to look for name errors
     for entry in spec['timeline']:
         for vname in entry['versions']:
             # trigger KeyError
             _ = version_lookup[vname]
-    # step 5. unify variables declaration (the list may contain strings as well as singleton dicts)
-    variables = []
-    defaults = {}
-    for var_decl in spec.get('variables', ()):
-        if isinstance(var_decl, dict):
-            defaults.update(var_decl)
-        if isinstance(var_decl, str):
-            variables.append(var_decl)
-    variables.extend(defaults)
-    spec['variables'] = variables
-    spec['var_defaults'] = defaults
 
 
 def load_spec(document: dict) -> dict:
@@ -211,3 +212,84 @@ def evaluate(results, testcase_ids) -> int:
         if buckets[value]:
             return value
     return 1
+
+
+def select_valid(versions: list) -> list:
+    return [version for version in versions if version['_explicit_validity']]
+
+
+def compile_testcases(spec, version=None, tests=None, sections=None, checkdate=None):
+    if checkdate is None:
+        checkdate = date.today()
+    annotate_validity(spec['timeline'], spec['versions'], checkdate)
+    if version is None:
+        versions = select_valid(spec['versions'].values())
+    else:
+        versions = [spec['versions'].get(version)]
+        if versions[0] is None:
+            raise RuntimeError(f"Requested version '{version}' not found")
+    if not versions:
+        raise RuntimeError(f"No valid version found for {checkdate}")
+    title = spec['name']
+    if sections:
+        title += f" [sections: {', '.join(sections)}]"
+    if tests:
+        title += f" [tests: '{tests}']"
+        tests_re = re.compile(tests)
+    # collect all testcases we need
+    testcase_lookup = spec['testcases']
+    all_testcase_ids = set()
+    for version in versions:
+        for tc_id in version['testcase_ids']:
+            if sections and testcase_lookup.get(tc_id, {}).get('section') not in sections:
+                continue
+            if tests and not tests_re.match(tc_id):
+                continue
+            all_testcase_ids.add(tc_id)
+    return title, sorted(all_testcase_ids)
+
+
+def sign_report(target_path):
+    return subprocess.run([
+        shutil.which('ssh-keygen'),
+        '-Y', 'sign',
+        '-f', KEYFILE_PATH,
+        '-n', 'report',
+        target_path,
+    ]).returncode
+
+
+def upload_report(target_path, monitor_url=MONITOR_URL):
+    try:
+        with open(TOKENFILE_PATH, "r") as fileobj:
+            auth_token = fileobj.read().strip()
+    except Exception as e:
+        logger.error(f"Unable to load token ({e!s}). Aborting upload to compliance monitor")
+        return 1
+    return subprocess.run([
+        shutil.which('curl'),
+        '--fail-with-body',
+        '--data-binary', f'@{target_path}.sig',
+        '--data-binary', f'@{target_path}',
+        '-H', 'Content-Type: application/x-signed-yaml',
+        '-H', f'Authorization: Basic {auth_token}',
+        f"{monitor_url.removesuffix('/')}/reports",
+    ]).returncode
+
+
+def dump_yaml(o):
+    return yaml.safe_dump(o, default_flow_style=False, sort_keys=False, explicit_start=True)
+
+
+def _atomic_write(path, text):
+    with tempfile.NamedTemporaryFile(
+        mode='w', encoding='UTF-8',
+        dir=os.path.dirname(path) or '.',
+        delete=False, delete_on_close=False,
+    ) as fileobj:
+        fileobj.write(text)
+    os.rename(fileobj.name, path)
+
+
+def write_yaml(path, o):
+    _atomic_write(path, dump_yaml(o))
