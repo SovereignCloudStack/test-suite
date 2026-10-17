@@ -9,8 +9,8 @@ from jinja2 import Environment, Template
 from kubernetes.client import ApiClient, ApiException, Configuration, CoreV1Api, CustomObjectsApi, V1Secret
 import yaml
 
-from interface import KubernetesClusterPlugin
-import k8s_helper
+from plugin.interface import KubernetesClusterPlugin
+from plugin import k8s_helper
 
 logger = logging.getLogger(__name__)
 logging.getLogger("kubernetes").setLevel(logging.INFO)

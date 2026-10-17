@@ -4,19 +4,12 @@
 name: SCS-compatible KaaS
 uuid: 1fffebe6-fd4b-44d3-a36c-fc58b4bb0180
 url: https://raw.githubusercontent.com/SovereignCloudStack/standards/main/Tests/scs-compatible-kaas.yaml
-variables:
-  - execution_mode: parallel  # alternatively: serial, dry
-scripts:
-- executable: ./kaas/k8s_test.py
-  args: -s {subject} --execution-mode {execution_mode} {testcases}
-  testcases:
+testcases:
   - id: cncf-k8s-conformance
-    lifetime: year
     section: heavy
     description: Must fulfill all requirements of scs-0201-v1 (CNCF Kubernetes conformance).
     url: https://docs.scs.community/standards/scs-0201-v1-cncf-conformance#regulations
   - id: kaas-networking-check
-    lifetime: month
     section: heavy
     description: Must pass all testcases of upstream CNCF Kubernetes e2e-suite focus 'NetworkPolicy'.
     url: https://docs.scs.community/standards/scs-0219-w1-kaas-networking#automated-tests
@@ -24,41 +17,46 @@ scripts:
     section: light
     description: Must fulfill all requirements of scs-0210-v2.
     url: https://docs.scs.community/standards/scs-0210-v2-k8s-version-policy#decision
-- testcases:
+  # manual testcases
   - id: node-distribution-check
     description: >-
       Manual check: Must fulfill all requirements of scs-0214-v2.
     url: https://docs.scs.community/standards/scs-0214-v2-k8s-node-distribution#decision
-modules:
-  - id: cncf-k8s-conformance
-    name: >-
-      scs-0201-v1: CNCF Kubernetes conformance
+  # composite testcases
+  - id: scs-0201-v1
+    description: CNCF Kubernetes conformance
     url: https://docs.scs.community/standards/scs-0201-v1-cncf-conformance
-    targets:
-      main:
+    components:
       - cncf-k8s-conformance
   - id: scs-0210-v2
-    name: Kubernetes version policy
+    description: Kubernetes version policy
     url: https://docs.scs.community/standards/scs-0210-v2-k8s-version-policy
-    targets:
-      main:
+    components:
       - version-policy-check
   - id: scs-0214-v2
-    name: Kubernetes node distribution and availability
+    description: Kubernetes node distribution and availability
     url: https://docs.scs.community/standards/scs-0214-v2-k8s-node-distribution
-    targets: {}
+    components: []
   - id: scs-0214-v2-manual
-    name: Kubernetes node distribution and availability
+    description: Kubernetes node distribution and availability (manual checks)
     url: https://docs.scs.community/standards/scs-0214-v2-k8s-node-distribution
-    targets:
-      preview:
+    components:
       - node-distribution-check
   - id: scs-0219-v1
-    name: KaaS networking
+    description: KaaS networking
     url: https://docs.scs.community/standards/scs-0219-v1-kaas-networking
-    targets:
-      main:
+    components:
       - kaas-networking-check
+  - id: scs-0502-v1
+    description: SCS-compatible KaaS v1
+    url: https://docs.scs.community/standards/scs-0502-v1-scs-compatible-kaas
+    components:
+      - ref: scs-0201-v1
+        lifetime: year
+      - scs-0210-v2
+      - scs-0214-v2
+      - ref: scs-0219-v1
+        lifetime: month
 timeline:
   - date: 2024-11-26
     versions:
@@ -69,8 +67,4 @@ timeline:
 versions:
   - version: v1
     stabilized_at: 2024-11-26
-    include:
-      - cncf-k8s-conformance
-      - scs-0210-v2
-      - scs-0214-v2
-      - scs-0219-v1
+    object: scs-0502-v1

@@ -7,9 +7,9 @@ from jinja2 import Environment
 from kubernetes.client import ApiClient, ApiException, Configuration
 import yaml
 
-from interface import KubernetesClusterPlugin
-import cs_helper as _csh
-import k8s_helper
+from plugin.interface import KubernetesClusterPlugin
+import plugin.cs_helper as _csh
+from plugin import k8s_helper
 
 logger = logging.getLogger(__name__)
 logging.getLogger("kubernetes").setLevel(logging.INFO)

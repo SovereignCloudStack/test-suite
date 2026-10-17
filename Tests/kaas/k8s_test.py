@@ -7,11 +7,13 @@
 SPDX-License-Identifier: CC-BY-SA 4.0
 """
 
+from datetime import datetime
 import getopt
 import logging
 import os
 import os.path
 import sys
+import uuid
 
 import yaml
 
@@ -19,6 +21,7 @@ from scs_0210_version_policy.k8s_version_policy import version_policy_check
 from sonobuoy_handler.sonobuoy_handler import SonobuoyHandler
 
 
+PREFLIGHT_PSEUDO = "scs-0502-preflight"  # pseudo testcase to record preflight check abort
 TESTCASES = {
     'cncf-k8s-conformance': lambda config, name: run_sono(config, name, '--mode=certified-conformance'),
     'kaas-networking-check': lambda config, name: run_sono(config, name, '--e2e-focus "NetworkPolicy"'),
@@ -64,11 +67,13 @@ to have them read from stdin, one testcase-id per line.
 
 
 class Config:
-    def __init__(self):
+    def __init__(self, subject):
         self.kubeconfig_path = None
-        self.subject = None
+        self.statedir = '.'
+        self.subject = subject
         self.mode = 'serial'
         self.testcases = []
+        self.env = {}
 
     def apply_argv(self, argv):
         """Parse cli arguments from the script call"""
@@ -97,8 +102,13 @@ class Config:
         if not self.subject:
             print("CRITICAL: You need to pass -s=SUBJECT.", file=sys.stderr)
             sys.exit(1)
+        self.setup()
+
+    def setup(self):
+        self.env = _load_env_yaml_section(path=ENVPATH, subject=self.subject)
         if not self.kubeconfig_path:
-            self.kubeconfig_path = os.path.join('.', self.subject, 'kubeconfig.yaml')
+            default = os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
+            self.kubeconfig_path = self.env.get('kubeconfig', default)
 
     def compute_sono_args(self, *args):
         if self.mode == 'parallel':
@@ -112,24 +122,25 @@ class Config:
 
 
 def run_sono(config, testcase, *args):
-    sonobuoy_fix = _load_env_yaml_section(path=ENVPATH, subject=config.subject).get('sonobuoy_fix', 'none')
     return_code = SonobuoyHandler(
         SCS_SONOBUOY_CONFIG_PATH, testcase, config.kubeconfig_path,
         result_dir_name=os.path.join(os.path.dirname(config.kubeconfig_path), testcase),
         args=config.compute_sono_args(*args),
-        sonobuoy_fix=sonobuoy_fix,
+        sonobuoy_fix=config.env.get('sonobuoy_fix', 'none'),
     ).run()
     return return_code == 0
 
 
-def harness(name, results, *check_fns):
+def attest(subject, name, *check_fns):
     """Harness for evaluating testcase `name`.
 
     Logs beginning and end of computation.
     Calls each fn in `check_fns`.
-    Records result to `results`.
+    Returns attestation dict.
     """
-    logger.info(f'*** {name}')
+    guid = str(uuid.uuid4())
+    timestamp = datetime.now()
+    logger.info(f'*** {subject}/{name} ({guid})')
     try:
         result = all(check_fn() for check_fn in check_fns)
     except BaseException:
@@ -137,17 +148,42 @@ def harness(name, results, *check_fns):
         value = 0
     else:
         value = 1 if result else -1
-    result = ['FAIL', 'ABORT', 'PASS'][value + 1]
-    print(f'{name}: {result}')
-    logger.info(f'+++ {name}: {result}')
-    results[name] = value
+    result = ['fail', 'dnf', 'pass'][value + 1]
+    logger.info(f'+++ {subject}/{name}: {result.upper()}')
+    return {
+        'guid': guid,
+        'timestamp': timestamp,
+        'subject': subject,
+        'predicate': result,
+        'object': name,
+    }
 
 
-def run_preflight_checks(kubeconfig):
+def run_preflight_checks(config):
     # ideally, make sure that we can connect to the cloud
     # here, at least check that the file exists
-    if not os.path.isfile(kubeconfig):
-        raise RuntimeError(f"pre-flight check failed: file {kubeconfig!r} does not exist")
+    if not os.path.isfile(config.kubeconfig_path):
+        logger.critical(f"pre-flight check failed: file {config.kubeconfig_path!r} does not exist")
+        del config.testcases[:]
+        return False
+    invalid = []
+    for testcase in config.testcases:
+        if testcase not in TESTCASES:
+            invalid.append(testcase)
+    if invalid:
+        logger.critical(f"Invalid/unkown testcases detected: {invalid}")
+        config.testcases[:] = [tc for tc in config.testcases if tc not in invalid]
+        return False
+    return True
+
+
+class _LogHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET, log=None):
+        super().__init__(level=level)
+        self.log = [] if log is None else log
+
+    def handle(self, record):
+        self.log.append(f'{record.levelname}: {record.getMessage()}')
 
 
 def main(argv):
@@ -165,10 +201,31 @@ def main(argv):
             print(f"{testcase}: ABORT")
         raise
 
-    results = {}
-    for testcase in config.testcases:
-        harness(testcase, results, lambda: TESTCASES[testcase](config, testcase))
+    report = run_testcases(config)
+    # don't do explicit_start here because that can easily be done by the caller using "echo ---",
+    # and then the caller can even add fields such as uuid, subject, and scope
+    yaml.safe_dump(report, sys.stdout, default_flow_style=False, sort_keys=False, explicit_start=False)
     return 0
+
+
+def run_testcases(config):
+    log = []
+    logging.root.addHandler(_LogHandler(level=logging.DEBUG, log=log))
+
+    attestations = [
+        attest(config.subject, PREFLIGHT_PSEUDO, lambda: run_preflight_checks(config)),
+    ] + [
+        attest(config.subject, testcase, lambda: TESTCASES[testcase](config, testcase))
+        for testcase in config.testcases
+    ]
+
+    return {
+        'uuid': str(uuid.uuid4()),
+        'creator': 'k8_test.py v0.1.0',
+        'attestations': attestations,
+        'log': log,
+        'attachments': {},
+    }
 
 
 if __name__ == "__main__":

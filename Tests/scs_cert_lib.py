@@ -127,6 +127,8 @@ def _resolve_spec(spec: dict):
 
 def load_spec(document: dict) -> dict:
     """check `document` (usually parsed YAML) and convert for further usage"""
+    if isinstance(document, str):
+        document = load_yaml(document)
     if _check_keywords('spec', document):
         # super simple syntax check (recursive)
         raise RuntimeError('syntax problems in spec file. bailing')
@@ -190,11 +192,6 @@ def add_period(dt: datetime, period: str) -> datetime:
 def eval_buckets(results, testcase_ids) -> dict:
     """
     returns buckets of test cases by means of a mapping
-
-    None: list of missing testcases
-    -1: list of failed testcases
-    0: list of aborted testcases
-    1: list of passed testcases
     """
     by_value = defaultdict(list)
     for testcase_id in testcase_ids:
@@ -208,10 +205,10 @@ def eval_buckets(results, testcase_ids) -> dict:
 def evaluate(results, testcase_ids) -> int:
     """returns overall result"""
     buckets = eval_buckets(results, testcase_ids)
-    for value in (-1, None, 0):
+    for value in ('fail', None, 'dnf'):
         if buckets[value]:
             return value
-    return 1
+    return 'pass'
 
 
 def select_valid(versions: list) -> list:
@@ -291,5 +288,64 @@ def _atomic_write(path, text):
     os.rename(fileobj.name, path)
 
 
+def load_yaml(path, default=None):
+    if not os.path.exists(path):
+        if default is None:
+            raise FileNotFoundError(path)
+        return default
+    with open(path, "r", encoding="UTF-8") as fileobj:
+        return yaml.load(fileobj, Loader=yaml.SafeLoader)
+
+
 def write_yaml(path, o):
     _atomic_write(path, dump_yaml(o))
+
+
+def enter_report(statepath, report, monitor_url=MONITOR_URL):
+    os.makedirs(statepath, exist_ok=True)
+    # save report
+    uuid = report['uuid']
+    report_yaml = os.path.join(statepath, f'report-{uuid}.yaml')
+    if os.path.exists(report_yaml):
+        raise RuntimeError(f"File 'report-{uuid}.yaml' already exists; report uuid NOT UNIQUE?")
+    write_yaml(report_yaml, report)
+    sign_report(report_yaml)
+    upload_report(report_yaml, monitor_url)
+    # update local scores
+    scorepath = os.path.join(statepath, 'scorecard.yaml')
+    scorecard = load_scores(scorepath)
+    update_scorecard(scorecard, report)
+    write_yaml(scorepath, scorecard)
+    # prune local reports
+    prune_reports(statepath, scorecard)
+
+
+def load_scores(scorepath):
+    return load_yaml(scorepath, default={})
+
+
+def update_scorecard(scorecard, report):
+    uuid = report['uuid']
+    for attestation in report['attestations']:
+        subject, object_ = attestation['subject'], attestation['object']
+        contender = scorecard.setdefault(subject, {}).setdefault(object_, {})
+        if not contender or contender['timestamp'] < attestation['timestamp']:
+            contender.update(**attestation, report=uuid)
+
+
+def prune_reports(statepath, scorecard):
+    # prune reports that don't occur in scorecard (i.e., old ones)
+    report_uuids = set(
+        att['report']
+        for subj_atts in scorecard.values()
+        for att in subj_atts.values()
+    )
+    fns = os.listdir(statepath)
+    for fn in fns:
+        if not fn.startswith('report-'):
+            continue
+        uuid = fn.removeprefix('report-').removesuffix('.sig').removesuffix('.yaml')
+        if len(uuid) != 36 or uuid in report_uuids:
+            continue
+        logger.info(f"Pruning {fn!s}")
+        os.unlink(os.path.join(statepath, fn))

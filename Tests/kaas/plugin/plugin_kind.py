@@ -3,8 +3,9 @@ import os
 import os.path
 from pathlib import Path
 
-from interface import KubernetesClusterPlugin
 from pytest_kind import KindCluster
+
+from plugin.interface import KubernetesClusterPlugin
 
 logger = logging.getLogger(__name__)
 

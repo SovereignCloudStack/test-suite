@@ -295,10 +295,8 @@ def run_preflight_checks(container, testcases):
     for testcase in testcases:
         if not testcase.startswith('scs-') and testcase != 'cleanup':
             invalid.append(testcase)
-            continue
         if testcase not in container:
             invalid.append(testcase)
-            continue
     if invalid:
         logger.critical(f"Invalid/unkown testcases detected: {invalid}")
         testcases[:] = [tc for tc in testcases if tc not in invalid]
