@@ -55,7 +55,8 @@ from scs_0123_mandatory_services.mandatory_services import \
 sys.path.insert(0, os.path.abspath('..'))
 from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
     load_env_yaml_section, attest, LogHandler, augment_scores, select_versions, \
-    Aggregator
+    Aggregator, print_prelim_summary, maintain_scorecard, run_multiple_subjects, \
+    do_multiple_subjects
 
 
 BASEDIR = os.path.dirname(__file__)
@@ -273,7 +274,10 @@ def run_preflight_checks(container, testcases):
     return True
 
 
-def run_testcases(subject, testcases, *, cloud=None):
+def run_testcases(subject, testcases, *, cloud=None, uuid_=None):
+    if uuid_ is None:
+        uuid_ = str(uuid.uuid4())
+
     c = make_container(subject, cloud=cloud)
     log = []
     logging.root.addHandler(LogHandler(level=logging.DEBUG, log=log))
@@ -286,7 +290,7 @@ def run_testcases(subject, testcases, *, cloud=None):
     ]
 
     return {
-        'uuid': str(uuid.uuid4()),
+        'uuid': uuid_,
         'creator': 'openstack_test.py v0.1.0',
         'attestations': attestations,
         'log': log,
@@ -305,14 +309,32 @@ def cli():
 @click.option('--section', '-S', 'sections', type=str, multiple=True)
 @click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
 @click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
-@click.argument('subject', type=str)
-def run(subject, specpath, version, sections, tests, monitor_url):
+@click.argument('subjects', nargs=-1, required=True, type=str)
+def run(subjects, specpath, version, sections, tests, monitor_url):
+    spec = load_spec(specpath)
+    versions = select_versions(spec, version)
     title, all_testcase_ids = compile_testcases(
-        load_spec(specpath),
-        version=version, sections=sections, tests=tests,
+        spec, versions, sections=sections, tests=tests,
     )
     logger.info(f"{title}: {len(all_testcase_ids)} testcases")
+    if len(subjects) > 1:
+        run_multiple_subjects(STATE_PATH, subjects, all_testcase_ids, monitor_url)
+        return
+    subject = subjects[0]
     report = run_testcases(subject, all_testcase_ids)
+    enter_report(STATE_PATH, report, monitor_url)
+    scorecard = maintain_scorecard(STATE_PATH, report)
+    print_prelim_summary(title, scorecard, subject, versions, partial=sections or tests)
+
+
+@cli.command()
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.argument('uuid_', type=str)
+@click.argument('subject', type=str)
+def run0(uuid_, subject, monitor_url):
+    # this command is supposed to be run concurrently, so no scorecard maintenance!
+    all_testcase_ids = sys.stdin.read().splitlines()
+    report = run_testcases(subject, all_testcase_ids, uuid_=uuid_)
     enter_report(STATE_PATH, report, monitor_url)
 
 
@@ -344,12 +366,15 @@ def aggregate(subjects, specpath, version, monitor_url):
 
 
 @cli.command()
-@click.argument('subject', type=str)
-def cleanup(subject):
+@click.argument('subjects', nargs=-1, required=True, type=str)
+def cleanup(subjects):
     """
     clean up any lingering IaaS resources
     """
-    run_testcases(subject, ('cleanup', ))
+    if len(subjects) > 1:
+        do_multiple_subjects('cleanup', subjects)
+        return
+    run_testcases(subjects[0], ('cleanup', ))
 
 
 if __name__ == "__main__":

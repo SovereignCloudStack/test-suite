@@ -12,6 +12,7 @@ import os.path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 
@@ -265,10 +266,11 @@ def _patch_missing(attestations, key, **kwargs):
 
 
 class Aggregator:
-    def __init__(self, scores):
+    def __init__(self, scores, silent=False):
         self.scores = scores
         self.attestations = []
         self.attachments = {}
+        self.silent = silent
 
     def aggregate_slice(self, subject, object_, slice_, keys, key):
         scores = self.scores
@@ -279,13 +281,15 @@ class Aggregator:
                 logger.debug(f'{subject}/{object_} already current at {timestamp}; latest {latest}')
                 return
         guid = str(uuid.uuid4())
-        logger.info(f'*** {subject}/{object_} ({guid})')
+        if not self.silent:
+            logger.info(f'*** {subject}/{object_} ({guid})')
         buckets = eval_buckets(slice_, keys)
         _patch_missing(buckets.get('miss', ()), key=key, subject=subject, object=object_)
         self.attachments[guid] = buckets
         predicates = [p for p in ('fail', 'miss', 'dnf', 'pass') if buckets.get(p)]
         result = predicates[0]
-        logger.info(f'+++ {subject}/{object_}: {result.upper()}')
+        if not self.silent:
+            logger.info(f'+++ {subject}/{object_}: {result.upper()}')
         att = {
             'guid': guid,
             'timestamp': datetime.now(),
@@ -295,19 +299,20 @@ class Aggregator:
         }
         self.attestations.append(att)
         scores[subject][object_] = att
+        return att
 
     def aggregate_version(self, subject, version):
         scores = self.scores
         object_, keys = version['object']['id'], version['testcase_ids']
         scores.setdefault(subject, {})
         slice_ = {key: scores[subject][key] for key in keys if key in scores[subject]}
-        self.aggregate_slice(subject, object_, slice_, keys, 'object')
+        return self.aggregate_slice(subject, object_, slice_, keys, 'object')
 
     def aggregate_subjects(self, object_, subjects):
         scores = self.scores
         subject, keys = subjects[0], subjects[1:]
         slice_ = {key: scores[key][object_] for key in keys if object_ in scores[key]}
-        self.aggregate_slice(subject, object_, slice_, keys, 'subject')
+        return self.aggregate_slice(subject, object_, slice_, keys, 'subject')
 
     def make_report(self):
         return {
@@ -338,8 +343,7 @@ def select_versions(spec, version=None, checkdate=None):
     return versions
 
 
-def compile_testcases(spec, version=None, tests=None, sections=None, checkdate=None):
-    versions = select_versions(spec, version, checkdate)
+def compile_testcases(spec, versions, tests=None, sections=None):
     title = spec['name']
     if sections:
         title += f" [sections: {', '.join(sections)}]"
@@ -376,7 +380,7 @@ def upload_report(target_path, monitor_url=MONITOR_URL):
     except Exception as e:
         logger.error(f"Unable to load token ({e!s}). Aborting upload to compliance monitor")
         return 1
-    return subprocess.run([
+    result = subprocess.run([
         shutil.which('curl'),
         '--fail-with-body',
         '--data-binary', f'@{target_path}.sig',
@@ -384,7 +388,10 @@ def upload_report(target_path, monitor_url=MONITOR_URL):
         '-H', 'Content-Type: application/x-signed-yaml',
         '-H', f'Authorization: Basic {auth_token}',
         f"{monitor_url.removesuffix('/')}/reports",
-    ]).returncode
+    ], capture_output=True)
+    if result.returncode:
+        logger.error(f"Error uploading report: {result.stderr}")
+    return result.returncode
 
 
 def download_scores(subject, monitor_url=MONITOR_URL):
@@ -420,6 +427,7 @@ def load_yaml(path, default=None):
     if not os.path.exists(path):
         if default is None:
             raise FileNotFoundError(path)
+        logger.debug(f"file {path} not found; falling back to default values")
         return default
     with open(path, "r", encoding="UTF-8") as fileobj:
         return yaml.load(fileobj, Loader=yaml.SafeLoader)
@@ -432,20 +440,32 @@ def write_yaml(path, o):
 def enter_report(statepath, report, monitor_url=MONITOR_URL):
     os.makedirs(statepath, exist_ok=True)
     # save report
-    uuid = report['uuid']
-    report_yaml = os.path.join(statepath, f'report-{uuid}.yaml')
+    uuid_ = report['uuid']
+    report_yaml = os.path.join(statepath, f'report-{uuid_}.yaml')
     if os.path.exists(report_yaml):
-        raise RuntimeError(f"File 'report-{uuid}.yaml' already exists; report uuid NOT UNIQUE?")
+        raise RuntimeError(f"File 'report-{uuid_}.yaml' already exists; report uuid NOT UNIQUE?")
     write_yaml(report_yaml, report)
     sign_report(report_yaml)
     upload_report(report_yaml, monitor_url)
+
+
+def load_report(statepath, uuid_, default=None):
+    report_yaml = os.path.join(statepath, f'report-{uuid_}.yaml')
+    return load_yaml(report_yaml, default=default)
+
+
+def maintain_scorecard(statepath, *reports):
     # update local scores
     scorepath = os.path.join(statepath, 'scorecard.yaml')
     scorecard = load_scores(scorepath)
-    update_scorecard_from_report(scorecard, report)
+    for report in reports:
+        if not report:
+            continue  # don't fail if a report couldn't be loaded
+        update_scorecard_from_report(scorecard, report)
     write_yaml(scorepath, scorecard)
     # prune local reports
     prune_reports(statepath, scorecard)
+    return scorecard
 
 
 def load_scores(scorepath):
@@ -496,3 +516,71 @@ def augment_scores(statepath, subject, monitor_url=MONITOR_URL):
     update_scorecard_from_scorecard(scorecard, remotescores)
     write_yaml(scorepath, scorecard)
     return scorecard
+
+
+def _print_att(a, buckets=None, partial=False):
+    if not buckets:
+        print(f"- {a['subject']}/{a['object']}: {a['predicate']} ({a['guid']})")
+        return
+    # use different predicates here for the tentative report
+    if buckets.get('fail') or buckets.get('dnf'):
+        verdict = 'FAIL'
+    elif buckets.get('miss'):
+        verdict = 'TENTATIVE pass'
+    else:
+        verdict = 'PASS'
+    # don't print guid here because it's an ephemeral attestation
+    print(f"- {a['subject']}/{a['object']}: {verdict}")
+    for cat in ('fail', 'miss', 'dnf'):
+        bucket = buckets.get(cat)
+        if not bucket:
+            continue
+        if cat == 'miss' and partial:
+            # do not report each missing testcase if a filter was used
+            continue
+        print(f"  - {cat.upper()}:")
+        for att2 in bucket:
+            print(f"    - {att2['object']}")
+
+
+def print_prelim_summary(title, scores, subject, versions, partial=False):
+    print("PRELIMINARY SUMMARY (use command 'aggregate' to create a report!)")
+    a = Aggregator(scores, silent=True)
+    for version in versions:
+        print(f"{title} {version['version']}")
+        att = a.aggregate_version(subject, version)
+        if att:
+            _print_att(att, buckets=a.attachments.get(att['guid']))
+            continue
+        object_ = version['object']['id']
+        att = scores.get(subject, {}).get(object_, {})
+        if att:
+            _print_att(att)
+            continue
+        print(f"- {subject}/{object_}: NO INFORMATION")
+
+
+def run_multiple_subjects(statepath, subjects, all_testcase_ids, monitor_url, args=()):
+    testcases_str = '\n'.join(all_testcase_ids)
+    cmdline = [sys.executable, sys.argv[0], 'run0', '--monitor-url', monitor_url]
+    if args:
+        cmdline.extend(args)
+    uuids = [str(uuid.uuid4()) for _ in subjects]
+    procs = [
+        subprocess.Popen(cmdline + [uuid_, subject], stdin=subprocess.PIPE, text=True)
+        for uuid_, subject in zip(uuids, subjects)
+    ]
+    for proc in procs:
+        proc.stdin.write(testcases_str)
+        proc.stdin.close()
+    for proc in procs:
+        proc.wait()
+    reports = [load_report(statepath, uuid_, default={}) for uuid_ in uuids]
+    maintain_scorecard(statepath, *reports)
+
+
+def do_multiple_subjects(cmd, subjects):
+    cmdline = [sys.executable, sys.argv[0], cmd]
+    procs = [subprocess.Popen(cmdline + [subject]) for subject in subjects]
+    for proc in procs:
+        proc.wait()

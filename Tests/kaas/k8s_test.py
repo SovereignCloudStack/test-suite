@@ -25,7 +25,8 @@ from plugin.run_plugin import init_plugin
 sys.path.insert(0, os.path.abspath('..'))
 from scs_cert_lib import load_spec, compile_testcases, MONITOR_URL, enter_report, \
     load_env_yaml_section, attest, LogHandler, select_versions, augment_scores, \
-    Aggregator
+    Aggregator, print_prelim_summary, maintain_scorecard, run_multiple_subjects, \
+    do_multiple_subjects
 
 
 BASEDIR = os.path.dirname(__file__)
@@ -63,19 +64,14 @@ to have them read from stdin, one testcase-id per line.
 
 
 class Config:
-    def __init__(self, subject):
-        self.kubeconfig_path = None
-        self.statedir = '.'
+    def __init__(self, subject, testcases, mode='serial', statedir=STATE_PATH):
+        self.statedir = statedir
         self.subject = subject
-        self.mode = 'serial'
-        self.testcases = []
-        self.env = {}
-
-    def setup(self):
+        self.mode = mode
+        self.testcases = testcases
         self.env = load_env_yaml_section(self.subject)
-        if not self.kubeconfig_path:
-            default = os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
-            self.kubeconfig_path = self.env.get('kubeconfig', default)
+        default = os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
+        self.kubeconfig_path = self.env.get('kubeconfig', default)
 
     def compute_sono_args(self, *args):
         if self.mode == 'parallel':
@@ -116,7 +112,10 @@ def run_preflight_checks(config):
     return True
 
 
-def run_testcases(config):
+def run_testcases(config, uuid_=None):
+    if uuid_ is None:
+        uuid_ = str(uuid.uuid4())
+
     log = []
     logging.root.addHandler(LogHandler(level=logging.DEBUG, log=log))
 
@@ -128,7 +127,7 @@ def run_testcases(config):
     ]
 
     return {
-        'uuid': str(uuid.uuid4()),
+        'uuid': uuid_,
         'creator': 'k8_test.py v0.1.0',
         'attestations': attestations,
         'log': log,
@@ -148,19 +147,36 @@ def cli():
 @click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
 @click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
 @click.option('--execution-mode', 'mode', type=click.Choice(('serial', 'parallel', 'dry')), default='serial')
-@click.argument('subject', type=str)
-def run(subject, specpath, version, sections, tests, monitor_url, mode):
+@click.argument('subjects', nargs=-1, required=True, type=str)
+def run(subjects, specpath, version, sections, tests, monitor_url, mode):
+    spec = load_spec(specpath)
+    versions = select_versions(spec)
     title, all_testcase_ids = compile_testcases(
-        load_spec(specpath),
-        version=version, sections=sections, tests=tests,
+        spec, versions, sections=sections, tests=tests,
     )
     logger.info(f"{title}: {len(all_testcase_ids)} testcases")
-    config = Config(subject)
-    config.statedir = STATE_PATH
-    config.testcases = all_testcase_ids
-    config.mode = mode
-    config.setup()
+
+    if len(subjects) > 1:
+        run_multiple_subjects(STATE_PATH, subjects, all_testcase_ids, monitor_url, args=['--execution-mode', mode])
+        return
+
+    config = Config(subjects[0], all_testcase_ids, mode=mode)
     report = run_testcases(config)
+    enter_report(STATE_PATH, report, monitor_url)
+    scorecard = maintain_scorecard(STATE_PATH, report)
+    print_prelim_summary(title, scorecard, subjects[0], versions, partial=sections or tests)
+
+
+@cli.command()
+@click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.option('--execution-mode', 'mode', type=click.Choice(('serial', 'parallel', 'dry')), default='serial')
+@click.argument('uuid_', type=str)
+@click.argument('subject', type=str)
+def run0(uuid_, subject, monitor_url, mode):
+    # this command is supposed to be run concurrently, so no scorecard maintenance!
+    all_testcase_ids = sys.stdin.read().splitlines()
+    config = Config(subject, all_testcase_ids, mode=mode)
+    report = run_testcases(config, uuid_=uuid_)
     enter_report(STATE_PATH, report, monitor_url)
 
 
@@ -192,21 +208,27 @@ def aggregate(subjects, specpath, version, monitor_url):
 
 
 @cli.command()
-@click.argument('subject', type=str)
-def provision(subject):
+@click.argument('subjects', nargs=-1, required=True, type=str)
+def provision(subjects):
     """
     create k8s clusters
     """
-    init_plugin(subject, statedir=STATE_PATH).create_cluster()
+    if len(subjects) > 1:
+        do_multiple_subjects('provision', subjects)
+        return
+    init_plugin(subjects[0], statedir=STATE_PATH).create_cluster()
 
 
 @cli.command()
-@click.argument('subject', type=str)
-def unprovision(subject):
+@click.argument('subjects', nargs=-1, required=True, type=str)
+def unprovision(subjects):
     """
     clean up k8s clusters
     """
-    init_plugin(subject, statedir=STATE_PATH).delete_cluster()
+    if len(subjects) > 1:
+        do_multiple_subjects('unprovision', subjects)
+        return
+    init_plugin(subjects[0], statedir=STATE_PATH).delete_cluster()
 
 
 if __name__ == "__main__":
