@@ -31,7 +31,7 @@ TOKENFILE_PATH = os.path.join(CONFIG_PATH, '.secret', 'tokenfile')
 KEYWORDS = {
     'spec': ('uuid', 'name', 'url', 'versions', 'testcases', 'timeline'),
     'versions': ('version', 'object', 'stabilized_at'),
-    'testcases': ('section', 'id', 'description', 'url', 'components'),
+    'testcases': ('section', 'id', 'description', 'url', 'components', 'lifetimes'),
 }
 
 
@@ -122,6 +122,21 @@ def collect_atomic_testcases(*objects):
     return result_list
 
 
+def _collect_lifetimes(object_, result_dict):
+    for child in object_.get('components', ()):
+        _collect_lifetimes(child, result_dict)
+    # the lifetimes specified here override those specified further below;
+    # therefore update them last
+    result_dict.update(object_.get('lifetimes', {}))
+
+
+def collect_lifetimes(*objects):
+    result_dict = {}
+    for object_ in objects:
+        _collect_lifetimes(object_, result_dict)
+    return result_dict
+
+
 def _resolve_spec(spec: dict):
     """rewire `spec` so as to make most lookups via name unnecessary, and to find name errors early"""
     if isinstance(spec['versions'], dict):
@@ -167,6 +182,7 @@ def _resolve_spec(spec: dict):
             testcase['attn'] += attn
         version['object'] = object_
         version['testcase_ids'] = [testcase['id'] for testcase in testcases]
+        version['lifetimes'] = collect_lifetimes(object_)
     # step 4c. resolve references to versions in timeline
     # on second thought, let's not go there: it's a canonical extension map, and it should remain that way.
     # however, we still have to look for name errors
@@ -263,6 +279,27 @@ def _patch_missing(attestations, key, **kwargs):
         att.update(**kwargs)
 
 
+def invalidate_old_attestation(checkdate, lifetimes, attestation, default='week'):
+    object_, timestamp = attestation['object'], attestation['timestamp']
+    if checkdate < add_period(timestamp, lifetimes.get(object_, default)):
+        return attestation
+    # just override predicate with 'miss', in this case meaning 'outdated';
+    # the evidence (the report uuid) remains, so the date can be checked!
+    return {**attestation, 'predicate': 'miss'}
+
+
+def prune_old_scores(scores, lifetimes, default='week', checkdate=None):
+    if checkdate is None:
+        checkdate = datetime.now()
+    return {
+        subject: {
+            object_: invalidate_old_attestation(checkdate, lifetimes, att, default=default)
+            for object_, att in subj_scores.items()
+        }
+        for subject, subj_scores in scores.items()
+    }
+
+
 class Aggregator:
     def __init__(self, scores, silent=False):
         self.scores = scores
@@ -278,6 +315,7 @@ class Aggregator:
             if latest <= timestamp:
                 logger.debug(f'{subject}/{object_} already current at {timestamp}; latest {latest}')
                 return
+            logger.debug(f'{subject}/{object_} to be recomputed: {timestamp} < {latest}')
         guid = str(uuid.uuid4())
         if not self.silent:
             logger.info(f'*** {subject}/{object_} ({guid})')
@@ -299,8 +337,8 @@ class Aggregator:
         scores[subject][object_] = att
         return att
 
-    def aggregate_version(self, subject, version):
-        scores = self.scores
+    def aggregate_version(self, subject, version, default_lifetime='week'):
+        scores = prune_old_scores(self.scores, version['lifetimes'], default=default_lifetime)
         object_, keys = version['object']['id'], version['testcase_ids']
         scores.setdefault(subject, {})
         slice_ = {key: scores[subject][key] for key in keys if key in scores[subject]}
