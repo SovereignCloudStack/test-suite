@@ -1,4 +1,6 @@
--c ../requirements.txt
+aiohttp
+click
+PyYAML
 pytest-kind
 kubernetes
 kubernetes_asyncio

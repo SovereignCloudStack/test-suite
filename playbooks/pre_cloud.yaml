@@ -3,20 +3,8 @@
   hosts: all
   roles:
     - role: bindep  # https://zuul-ci.org/docs/zuul-jobs/latest/general-roles.html#role-bindep
-    - role: ensure-pip  # https://zuul-ci.org/docs/zuul-jobs/latest/python-roles.html#role-ensure-pip
+    - role: ensure-virtualenv  # https://zuul-ci.org/docs/zuul-jobs/latest/python-roles.html#role-ensure-virtualenv
   tasks:
-    - name: Install iaas dependencies
-      ansible.builtin.pip:
-        chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
-        requirements: "Tests/iaas/requirements.txt"
-      when: iaas | bool
-
-    - name: Install kaas dependencies
-      ansible.builtin.pip:
-        chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
-        requirements: "Tests/kaas/requirements.txt"
-      when: kaas | bool
-
     - name: Create local binary dir
       ansible.builtin.file:
         path: "{{ ansible_user_dir}}/.local/bin"
@@ -29,7 +17,7 @@
       args:
         chdir: "{{ ansible_user_dir}}/.local/bin/"
         creates: sonobuoy
-      when: kaas | bool
+      when: sonobuoy_tar_gz_url | bool
 
     - name: Create cloud config dir
       ansible.builtin.file:
@@ -82,17 +70,3 @@
         dest: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}/Tests/.secret/tokenfile"
         mode: "0600"
       no_log: true
-
-    - name: Clean up any lingering resources from previous run
-      ansible.builtin.command:
-        cmd: python3 Tests/scs-test-runner.py --config Tests/config.toml --debug cleanup --preset {{ preset }}
-        chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
-      changed_when: true
-      when: do_cleanup | bool
-
-    - name: Provision necessary clusters
-      ansible.builtin.command:
-        cmd: python3 Tests/scs-test-runner.py --config Tests/config.toml --debug provision --preset {{ preset }}
-        chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
-      changed_when: true
-      when: do_provision | bool

@@ -2,21 +2,16 @@
 - name: Run compliance check tool
   hosts: all
   tasks:
-    - name: Run compliance script
-      # write report.yaml into the proper directory so it will be transferred back by base job
-      # -- this then works regardless of VM/pod
-      ansible.builtin.command:
-        cmd: >
-          python3 Tests/scs-test-runner.py --config Tests/config.toml --debug
-          run --preset {{ preset }} --section '{{ section }}'
-          --output "{{ ansible_user_dir }}/zuul-output/artifacts/report.yaml"
+    - name: Run run_iaas.py
+      ansible.builtin.shell:
+        cmd: playbooks/run_iaas.sh
         chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
       changed_when: true
+      when: iaas | bool
 
-    - name: Return artifact URL
-      zuul_return:
-        data:
-          zuul:
-            artifacts:
-              - name: "report.yaml"
-                url: "artifacts/report.yaml"
+    - name: Run run_kaas.py
+      ansible.builtin.shell:
+        cmd: playbooks/run_kaas.sh
+        chdir: "{{ ansible_user_dir }}/{{ zuul.project.src_dir }}"
+      changed_when: true
+      when: kaas | bool

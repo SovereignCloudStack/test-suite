@@ -7,9 +7,9 @@ from jinja2 import Environment, StrictUndefined
 from kubernetes.client import ApiClient, ApiException, Configuration
 import yaml
 
-from interface import KubernetesClusterPlugin
-import gardener_helper as _gh
-import k8s_helper
+from plugin.interface import KubernetesClusterPlugin
+import plugin.gardener_helper as _gh
+from plugin import k8s_helper
 
 logger = logging.getLogger(__name__)
 logging.getLogger("kubernetes").setLevel(logging.INFO)

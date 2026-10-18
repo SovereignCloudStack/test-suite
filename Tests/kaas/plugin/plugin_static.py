@@ -1,7 +1,7 @@
 import os.path
 import shutil
 
-from interface import KubernetesClusterPlugin
+from plugin.interface import KubernetesClusterPlugin
 
 
 class PluginStatic(KubernetesClusterPlugin):

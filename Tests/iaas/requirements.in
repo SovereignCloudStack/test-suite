@@ -1,3 +1,5 @@
--c ../requirements.txt
+click
+PyYAML
+# sslyze only for secure connections (not yet connected)
 boto3
 openstacksdk
