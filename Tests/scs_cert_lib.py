@@ -381,6 +381,17 @@ def select_versions(spec, version=None, checkdate=None):
 
 def compile_testcases(spec, versions, tests=None, sections=None):
     title = spec['name']
+    if sections and sections[0] == '.auto':
+        today = date.today()
+        # https://docs.python.org/3/library/datetime.html#datetime.date.weekday
+        # Return the day of the week as an integer, where Monday is 0 and Sunday is 6.
+        weekday = today.weekday()
+        if weekday == 5:  # Saturday
+            auto_sections = ('light', 'medium', 'heavy')
+        else:
+            auto_sections = ('light', 'medium')
+        logger.info(f'auto-selected sections: {auto_sections}')
+        sections = auto_sections + sections[1:]
     if sections:
         title += f" [sections: {', '.join(sections)}]"
     if tests:
