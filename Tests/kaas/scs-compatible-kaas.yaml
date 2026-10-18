@@ -51,12 +51,10 @@ testcases:
     description: SCS-compatible KaaS v1
     url: https://docs.scs.community/standards/scs-0502-v1-scs-compatible-kaas
     components:
-      - ref: scs-0201-v1
-        lifetime: year
+      - scs-0201-v1  # lifetime: year
       - scs-0210-v2
       - scs-0214-v2
-      - ref: scs-0219-v1
-        lifetime: month
+      - scs-0219-v1  # lifetime: month
 timeline:
   - date: 2024-11-26
     versions:

@@ -32,7 +32,6 @@ KEYWORDS = {
     'spec': ('uuid', 'name', 'url', 'versions', 'testcases', 'timeline'),
     'versions': ('version', 'object', 'stabilized_at'),
     'testcases': ('section', 'id', 'description', 'url', 'components'),
-    'include': ('ref', 'lifetime'),
 }
 
 
@@ -113,7 +112,7 @@ def _collect_atomic_testcases(object_, result_list):
         result_list.append(object_)
         return
     for child in components:
-        _collect_atomic_testcases(child['ref'], result_list)
+        _collect_atomic_testcases(child, result_list)
 
 
 def collect_atomic_testcases(*objects):
@@ -155,8 +154,7 @@ def _resolve_spec(spec: dict):
         if not components:
             continue
         testcase['components'] = [
-            {'ref': testcase_lookup[inc], 'lifetime': None} if isinstance(inc, str) else
-            {**inc, 'ref': testcase_lookup[inc['ref']]}
+            testcase_lookup[inc]
             for inc in components
         ]
     # step 4b. resolve 'object' in versions, collect all atomic testcases
