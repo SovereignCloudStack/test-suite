@@ -210,7 +210,9 @@ def aggregate(subjects, specpath, version, monitor_url):
         else:
             a.aggregate_version(subjects[0], version)
 
-    enter_report(STATE_PATH, a.make_report(), monitor_url)
+    report = a.make_report()
+    enter_report(STATE_PATH, report, monitor_url)
+    maintain_scorecard(STATE_PATH, report)
 
 
 @cli.command()
