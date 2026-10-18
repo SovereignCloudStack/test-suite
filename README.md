@@ -98,6 +98,8 @@ section above to configure `sonobuoy_fix` in `$HOME/.config/scs/env.yaml`.
 
 ## Submitting results to the compliance monitor
 
+### Prerequisites
+
 The test scripts will automatically submit a report of the run to the compliance monitor,
 provided that the following files are present:
 
@@ -109,6 +111,75 @@ You can create these files using `Tests/add_subject.py`.
 Note that you will also have to open a pull request to make the public counterparts of these
 files known to the compliance monitor. For more information, see the official
 [SCS docs page](https://docs.scs.community/standards/certification/pipeline/).
+
+### Aggregating attestations
+
+The command line for running the tests will only create attestations for individual
+testcases, such as `scs-0123-service-network` or `cncf-k8s-conformance`. In order to
+create attestations for the whole scope (SCS-compatible IaaS or KaaS), you need to
+run
+
+```shell
+# for iaas
+cd Tests/iaas
+./openstack_test.py aggregate SUBJECT
+
+# for kaas
+cd Tests/kaas
+./k8s_test.py aggregate SUBJECT
+```
+
+### Aggregating regions (SCS-compatible IaaS only)
+
+If you want to have multiple regions certified, you would run tests for each region
+and then aggregate (like above) across all regions at once, like so:
+
+```shell
+cd Tests/iaas
+# assuming acme is your product, with regions north and south
+./openstack_test.py run acme-north acme-south
+./openstack_test.py aggregate acme acme-north acme-south
+```
+
+If you use multiple subjects with `openstack_test.py run` like in this example,
+then these subjects will be tested concurrently. This means that the console output
+can become quite disorderly.
+
+### Provisioning and unprovisioning clusters (SCS-compatible KaaS only)
+
+Usually the tests must be performed on freshly created clusters. The testsuite
+uses a plugin system to handle provisioning and unprovisioning of clusters across
+multiple cluster-lifecycle-management systems, such as Gardener or ClusterStacks.
+
+For each of the test subjects (i.e., for each active k8s branch), create an entry
+in `$HOME/.config/scs/clusters.yaml` -- have a look at `/playbooks/clusters.yaml.j2`
+in this repository to get an idea.
+
+Once you have these entries in place, you can provision a cluster, run the testsuite
+on that cluster, and unprovision the cluster like so:
+
+```shell
+cd Tests/kaas
+./k8s_test.py provision acme-1.35  # assuming acme is your product name
+./k8s_test.py run acme-1.35   # no need to supply --kubeconfig!
+./k8s_test.py unprovision acme-1.35
+```
+
+All these commands also accept multiple subjects, which will then be processed
+concurrently, trading wall time for an increased load on your resources.
+
+### Aggregating k8s branches (SCS-compatible KaaS only)
+
+The certification in this case requires that all active k8s branches be tested.
+The attestations would need to be aggregated across all branches at once, like so:
+
+```shell
+cd Tests/kaas
+# provision and unprovision omitted here for brevity
+./k8s_test.py run acme-1.35 acme-1.36 acme-1.37
+# (do three calls of run if you want it sequentially)
+./k8s_test.py aggregate acme-kaas acme-1.35 acme-1.36 acme-1.37
+```
 
 ## Testing in docker containers
 
