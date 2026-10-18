@@ -529,7 +529,10 @@ def _print_att(a, buckets=None, partial=False):
         verdict = 'PASS'
     # don't print guid here because it's an ephemeral attestation
     print(f"- {a['subject']}/{a['object']}: {verdict}")
-    for cat in ('fail', 'miss', 'dnf'):
+    categories = ['fail', 'miss', 'dnf']
+    if partial:
+        categories.append('pass')
+    for cat in categories:
         bucket = buckets.get(cat)
         if not bucket:
             continue
@@ -541,14 +544,17 @@ def _print_att(a, buckets=None, partial=False):
             print(f"    - {att2['object']}")
 
 
-def print_prelim_summary(title, scores, subject, versions, partial=False):
+def print_prelim_summary(title, report, subject, versions, partial=False):
     print("PRELIMINARY SUMMARY (use command 'aggregate' to create a report!)")
+    scores = {}
+    for att in report['attestations']:
+        scores.setdefault(att['subject'], {})[att['object']] = att
     a = Aggregator(scores, silent=True)
     for version in versions:
         print(f"{title} {version['version']}")
         att = a.aggregate_version(subject, version)
         if att:
-            _print_att(att, buckets=a.attachments.get(att['guid']))
+            _print_att(att, buckets=a.attachments.get(att['guid']), partial=partial)
             continue
         object_ = version['object']['id']
         att = scores.get(subject, {}).get(object_, {})

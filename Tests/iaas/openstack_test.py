@@ -324,7 +324,7 @@ def run(subjects, specpath, version, sections, tests, monitor_url):
     report = run_testcases(subject, all_testcase_ids)
     enter_report(STATE_PATH, report, monitor_url)
     scorecard = maintain_scorecard(STATE_PATH, report)
-    print_prelim_summary(title, scorecard, subject, versions, partial=sections or tests)
+    print_prelim_summary(title, report, subject, versions, partial=sections or tests)
 
 
 @cli.command()

@@ -170,7 +170,7 @@ def run(subjects, specpath, version, sections, tests, monitor_url, kubeconfig_pa
     report = run_testcases(config)
     enter_report(STATE_PATH, report, monitor_url)
     scorecard = maintain_scorecard(STATE_PATH, report)
-    print_prelim_summary(title, scorecard, subjects[0], versions, partial=sections or tests)
+    print_prelim_summary(title, report, subjects[0], versions, partial=sections or tests)
 
 
 @cli.command()
