@@ -64,14 +64,15 @@ to have them read from stdin, one testcase-id per line.
 
 
 class Config:
-    def __init__(self, subject, testcases, mode='serial', statedir=STATE_PATH):
+    def __init__(self, subject, testcases, mode='serial', statedir=STATE_PATH, kubeconfig_path=None):
         self.statedir = statedir
         self.subject = subject
         self.mode = mode
         self.testcases = testcases
         self.env = load_env_yaml_section(self.subject)
-        default = os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
-        self.kubeconfig_path = self.env.get('kubeconfig', default)
+        self.kubeconfig_path = kubeconfig_path \
+            or self.env.get('kubeconfig') \
+            or os.path.join(self.statedir, self.subject, 'kubeconfig.yaml')
 
     def compute_sono_args(self, *args):
         if self.mode == 'parallel':
@@ -83,15 +84,17 @@ class Config:
             args += ('--plugin-env e2e.E2E_DRYRUN=true', )
         return args + ('--plugin-env e2e.E2E_EXTRA_ARGS=--ginkgo.flake-attempts=2', )
 
+    def make_sonobuoy_handler(self, testcase, *args):
+        return SonobuoyHandler(
+            SCS_SONOBUOY_CONFIG_PATH, testcase, self.kubeconfig_path,
+            result_dir_name=os.path.join(self.statedir, self.subject, testcase),
+            args=self.compute_sono_args(*args),
+            sonobuoy_fix=self.env.get('sonobuoy_fix', 'none'),
+        )
+
 
 def run_sono(config, testcase, *args):
-    return_code = SonobuoyHandler(
-        SCS_SONOBUOY_CONFIG_PATH, testcase, config.kubeconfig_path,
-        result_dir_name=os.path.join(os.path.dirname(config.kubeconfig_path), testcase),
-        args=config.compute_sono_args(*args),
-        sonobuoy_fix=config.env.get('sonobuoy_fix', 'none'),
-    ).run()
-    return return_code == 0
+    return 0 == config.make_sonobuoy_handler(testcase, *args).run()
 
 
 def run_preflight_checks(config):
@@ -146,9 +149,10 @@ def cli():
 @click.option('--section', '-S', 'sections', type=str, multiple=True)
 @click.option('--specpath', 'specpath', type=str, default=DEFAULT_SPECPATH)
 @click.option('--monitor-url', 'monitor_url', type=str, default=MONITOR_URL)
+@click.option('--kubeconfig', 'kubeconfig_path', type=str, default=None)
 @click.option('--execution-mode', 'mode', type=click.Choice(('serial', 'parallel', 'dry')), default='serial')
 @click.argument('subjects', nargs=-1, required=True, type=str)
-def run(subjects, specpath, version, sections, tests, monitor_url, mode):
+def run(subjects, specpath, version, sections, tests, monitor_url, kubeconfig_path, mode):
     spec = load_spec(specpath)
     versions = select_versions(spec)
     title, all_testcase_ids = compile_testcases(
@@ -157,10 +161,12 @@ def run(subjects, specpath, version, sections, tests, monitor_url, mode):
     logger.info(f"{title}: {len(all_testcase_ids)} testcases")
 
     if len(subjects) > 1:
+        if kubeconfig_path:
+            raise RuntimeError("Cannot use kubeconfig override with multiple subjects!")
         run_multiple_subjects(STATE_PATH, subjects, all_testcase_ids, monitor_url, args=['--execution-mode', mode])
         return
 
-    config = Config(subjects[0], all_testcase_ids, mode=mode)
+    config = Config(subjects[0], all_testcase_ids, mode=mode, kubeconfig_path=kubeconfig_path)
     report = run_testcases(config)
     enter_report(STATE_PATH, report, monitor_url)
     scorecard = maintain_scorecard(STATE_PATH, report)

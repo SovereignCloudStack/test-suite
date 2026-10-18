@@ -24,7 +24,7 @@ def _find_sonobuoy():
     result = os.path.join(os.path.expanduser('~'), '.local', 'bin', 'sonobuoy')
     if os.path.exists(result):
         return result
-    logger.debug('sonobuoy executable not found; expect errors')
+    raise RuntimeError("sonobuoy executable not found; is it in PATH?")
 
 
 def _fmt_result(counter):
@@ -129,7 +129,8 @@ class SonoFixInjectKubeconfig(SonoFixBase):
         if namespace_idx is None:
             raise RuntimeError("generated sonobuoy manifest contains no Namespace")
         self.handler.namespace = docs[namespace_idx]["metadata"]["name"]
-        logger.debug(f"sonobuoy namespace: {self.handler.namespace}")
+        # the namespace can be inferred from subsequent calls to Sonobuoy, whose cmdlines will be logged
+        # logger.debug(f"sonobuoy namespace: {self.handler.namespace}")
 
         # Insert Secret containing admin kubeconfig into manifest so sonobuoy lifecycle owns it
         with open(self.handler.kubeconfig_path, "rb") as kf:
@@ -173,9 +174,6 @@ class SonobuoyHandler:
     the generation of the results for a test report
     """
 
-    kubeconfig_path = None
-    working_directory = None
-
     def __init__(
         self,
         scs_sonobuoy_config_yaml,
@@ -185,19 +183,13 @@ class SonobuoyHandler:
         args=(),
         sonobuoy_fix="none",
     ):
-        self.check_name = check_name
-        logger.debug(f"kubeconfig: {kubeconfig} ")
-        if kubeconfig is None:
-            raise RuntimeError("No kubeconfig provided")
         self.kubeconfig_path = kubeconfig
-        self.working_directory = os.getcwd()
-        if result_dir_name is None:
+        if not result_dir_name:
             result_dir_name = os.path.join(gettempdir(), check_name)
+        elif not os.path.isabs(result_dir_name):
+            result_dir_name = os.path.abspath(result_dir_name)
         self.result_dir_name = result_dir_name
         self.sonobuoy = _find_sonobuoy()
-        logger.debug(f"working from {self.working_directory}")
-        logger.debug(f"placing results at {self.result_dir_name}")
-        logger.debug(f"sonobuoy executable at {self.sonobuoy}")
         if not os.path.exists(scs_sonobuoy_config_yaml):
             raise RuntimeError(f"scs_sonobuoy_config_yaml {scs_sonobuoy_config_yaml} does not exist.")
         self.scs_sonobuoy_config_yaml = scs_sonobuoy_config_yaml
@@ -205,11 +197,10 @@ class SonobuoyHandler:
         # Dynamically populated by fix strategies (e.g., SonoFixInjectKubeconfig)
         # to ensure subsequent wait/retrieve/delete calls target the exact namespace.
         self.namespace = None
-
         if sonobuoy_fix == "inject-kubeconfig":
-            self.sonobuoy_fix = SonoFixInjectKubeconfig(self)
+            self._sonobuoy_fix = SonoFixInjectKubeconfig(self)
         elif sonobuoy_fix in (None, "none", ""):
-            self.sonobuoy_fix = SonoFixNone(self)
+            self._sonobuoy_fix = SonoFixNone(self)
         else:
             raise ValueError(f"Unknown sonobuoy fix: {sonobuoy_fix}")
 
@@ -227,62 +218,46 @@ class SonobuoyHandler:
         return subprocess.run(args=inv_args, check=True, stdout=stdout, **kwargs)
 
     def _sonobuoy_run(self):
-        self.sonobuoy_fix.run()
+        self._sonobuoy_fix.run()
 
     def _sonobuoy_delete(self):
         self._invoke_sonobuoy("delete", "--wait")
 
-    def _eval_result(self, counter):
-        """evaluate test results and return return code"""
-        result_message = f"sonobuoy reports {_fmt_result(counter)}"
-        if counter['failed']:
-            logger.error(result_message)
-            return 3
-        logger.info(result_message)
-        return 0
-
-    def _preflight_check(self):
-        """
-        Preflight test to ensure that everything is set up correctly for execution
-        """
-        if not self.sonobuoy:
-            raise RuntimeError("sonobuoy executable not found; is it in PATH?")
-
-    def _sonobuoy_retrieve_result(self, plugin='e2e'):
+    def _sonobuoy_retrieve(self):
         """
         Invoke sonobuoy to retrieve results and to store them in a subdirectory of
-        the working directory. Analyze the results yaml file for given `plugin` and
+        the working directory.
+        """
+        os.makedirs(self.result_dir_name, exist_ok=True)
+        self._invoke_sonobuoy("retrieve", "-x", self.result_dir_name)
+
+    def _tally_result(self, plugin='e2e'):
+        """
+        Analyze the results yaml file for given `plugin` and
         log each failure as ERROR. Return summary dict.
         """
-        logger.debug(f"retrieving results to {self.result_dir_name}")
-        result_dir = os.path.join(self.working_directory, self.result_dir_name)
-        os.makedirs(result_dir, exist_ok=True)
-
-        self._invoke_sonobuoy("retrieve", "-x", result_dir)
-        yaml_path = os.path.join(result_dir, 'plugins', plugin, 'sonobuoy_results.yaml')
+        yaml_path = os.path.join(self.result_dir_name, 'plugins', plugin, 'sonobuoy_results.yaml')
         logger.debug(f"parsing results from {yaml_path}")
         ok_to_fail_regex_list = _load_ok_to_fail_regex_list(self.scs_sonobuoy_config_yaml)
-
-        return sonobuoy_parse_result(plugin, yaml_path, ok_to_fail_regex_list)
+        return sonobuoy_parse_result(yaml_path, ok_to_fail_regex_list)
 
     def run(self):
         """
-        This method is to be called to run the plugin
+        Run sonobuoy; return non-zero value precisely when some Sonobuoy testcase failed.
         """
-        logger.info(f"running sonobuoy for testcase {self.check_name}")
-        self._preflight_check()
+        logger.debug(f"SCS Sonobuoy Config: {self.scs_sonobuoy_config_yaml}")
         try:
             self._sonobuoy_delete()  # remove leftovers from previous run, if any
             self._sonobuoy_run()
-            counter = self._sonobuoy_retrieve_result()
-            return_code = self._eval_result(counter)
-            logger.debug(self.check_name + ": " + ("PASS", "FAIL")[min(1, return_code)])
-            return return_code
+            self._sonobuoy_retrieve()
+            counter = self._tally_result()
+            logger.info(f"e2e results: {_fmt_result(counter)}")
+            return counter['failed']
         finally:
             self._sonobuoy_delete()
 
 
-def sonobuoy_parse_result(plugin, sonobuoy_results_yaml_path, ok_to_fail_regex_list):
+def sonobuoy_parse_result(sonobuoy_results_yaml_path, ok_to_fail_regex_list):
     with open(sonobuoy_results_yaml_path, "r") as fileobj:
         result_obj = yaml.load(fileobj.read(), yaml.SafeLoader)
 
@@ -300,8 +275,6 @@ def sonobuoy_parse_result(plugin, sonobuoy_results_yaml_path, ok_to_fail_regex_l
                     else:
                         logger.error(f"FAILED: {item['name']}")
                 counter[status] += 1
-
-    logger.info(f"{plugin} results: {_fmt_result(counter)}")
     return counter
 
 
@@ -356,6 +329,6 @@ def ok_to_fail(ok_to_fail_regex_list, test_name):
 
 def check_sonobuoy_result(scs_sonobuoy_config_yaml, result_yaml):
     ok_to_fail_regex_list = _load_ok_to_fail_regex_list(scs_sonobuoy_config_yaml)
-    counter = sonobuoy_parse_result("", result_yaml, ok_to_fail_regex_list)
+    counter = sonobuoy_parse_result(result_yaml, ok_to_fail_regex_list)
     for key, value in counter.items():
         print(f"{key}: {value}")
