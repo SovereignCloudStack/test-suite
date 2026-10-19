@@ -74,7 +74,7 @@ Given a kubeconfig file `path/to/kubeconfig.yaml`, run
 
 ```shell
 cd Tests/kaas
-./k8s_test.py --kubeconfig path/to/kubeconfig.yaml SUBJECT
+./k8s_test.py run --kubeconfig path/to/kubeconfig.yaml SUBJECT
 ```
 
 Replace `SUBJECT` with an arbitrary, but meaningful subject name. Also, please note that the check
