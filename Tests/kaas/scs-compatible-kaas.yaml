@@ -5,6 +5,9 @@ name: SCS-compatible KaaS
 uuid: 1fffebe6-fd4b-44d3-a36c-fc58b4bb0180
 url: https://raw.githubusercontent.com/SovereignCloudStack/standards/main/Tests/scs-compatible-kaas.yaml
 testcases:
+  - id: scs-0502-preflight
+    description: Pseudo-testcase to record any early failures that prevent the test from being performed.
+    components: []  # declare this as an empty composite so it doesn't get collected for real tests
   - id: cncf-k8s-conformance
     section: heavy
     description: Must fulfill all requirements of scs-0201-v1 (CNCF Kubernetes conformance).

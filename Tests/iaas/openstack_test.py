@@ -66,6 +66,7 @@ STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sc
 
 logger = logging.getLogger(__name__)
 PREFLIGHT_PSEUDO = "scs-0501-preflight"  # pseudo testcase to record preflight check abort
+FIXED_TESTCASES = (PREFLIGHT_PSEUDO, )
 PREFIX = "_scs-"  # used for cleanup: only remove objects whose name starts in PREFIX
 IPADDR = "10.1.0."  # used for cleanup: only remove network objects within IPADDR
 
@@ -356,11 +357,11 @@ def aggregate(subjects, specpath, version, monitor_url):
         if len(subjects) > 1:
             for subject in subjects[1:]:
                 # compute {subject}/{version.object}
-                a.aggregate_version(subject, version)
+                a.aggregate_version(subject, version, fixed_testcases=FIXED_TESTCASES)
             # compute {subject[0]}/{version.object}
             a.aggregate_subjects(version['object']['id'], subjects)
         else:
-            a.aggregate_version(subjects[0], version)
+            a.aggregate_version(subjects[0], version, fixed_testcases=FIXED_TESTCASES)
 
     report = a.make_report()
     enter_report(STATE_PATH, report, monitor_url)
