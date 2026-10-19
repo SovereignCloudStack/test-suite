@@ -341,9 +341,11 @@ class Aggregator:
         scores[subject][object_] = att
         return att
 
-    def aggregate_version(self, subject, version, default_lifetime='week'):
+    def aggregate_version(self, subject, version, default_lifetime='week', fixed_testcases=None):
         scores = prune_old_scores(self.scores, version['lifetimes'], default=default_lifetime)
-        object_, keys = version['object']['id'], version['testcase_ids']
+        object_, testcases = version['object']['id'], version['testcase_ids']
+        keys = list(fixed_testcases) if fixed_testcases else []
+        keys.extend(testcases)
         scores.setdefault(subject, {})
         slice_ = {key: scores[subject][key] for key in keys if key in scores[subject]}
         return self.aggregate_slice(subject, object_, slice_, keys, 'object')

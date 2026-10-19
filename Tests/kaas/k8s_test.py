@@ -35,6 +35,7 @@ DEFAULT_SPECPATH = os.path.join(BASEDIR, 'scs-compatible-kaas.yaml')
 STATE_PATH = os.path.join(os.path.expanduser('~'), '.local', 'share', 'scs', 'sck')
 
 PREFLIGHT_PSEUDO = "scs-0502-preflight"  # pseudo testcase to record preflight check abort
+FIXED_TESTCASES = (PREFLIGHT_PSEUDO, )
 TESTCASES = {
     'cncf-k8s-conformance': lambda config, name: run_sono(config, name, '--mode=certified-conformance'),
     'kaas-networking-check': lambda config, name: run_sono(config, name, '--e2e-focus "NetworkPolicy"'),
@@ -204,11 +205,11 @@ def aggregate(subjects, specpath, version, monitor_url):
         if len(subjects) > 1:
             for subject in subjects[1:]:
                 # compute {subject}/{version.object}
-                a.aggregate_version(subject, version)
+                a.aggregate_version(subject, version, fixed_testcases=FIXED_TESTCASES)
             # compute {subject[0]}/{version.object}
             a.aggregate_subjects(version['object']['id'], subjects)
         else:
-            a.aggregate_version(subjects[0], version)
+            a.aggregate_version(subjects[0], version, fixed_testcases=FIXED_TESTCASES)
 
     report = a.make_report()
     enter_report(STATE_PATH, report, monitor_url)
