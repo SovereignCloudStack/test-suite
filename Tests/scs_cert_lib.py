@@ -35,6 +35,10 @@ KEYWORDS = {
 }
 
 
+class ComplianceMonitorCommError(Exception):
+    """There was a problem communicating with the compliance monitor."""
+
+
 class LogHandler(logging.Handler):
     def __init__(self, level=logging.NOTSET, log=None):
         super().__init__(level=level)
@@ -425,11 +429,10 @@ def upload_report(target_path, monitor_url=MONITOR_URL):
         with open(TOKENFILE_PATH, "r") as fileobj:
             auth_token = fileobj.read().strip()
     except Exception as e:
-        logger.error(f"Unable to load token ({e!s}). Aborting upload to compliance monitor")
-        return 1
+        raise ComplianceMonitorCommError(f"Unable to load token ({e!s})")
     result = subprocess.run([
         shutil.which('curl'),
-        '--fail-with-body',
+        '--fail-with-body', '--no-progress-meter',
         '--data-binary', f'@{target_path}.sig',
         '--data-binary', f'@{target_path}',
         '-H', 'Content-Type: application/x-signed-yaml',
@@ -437,17 +440,17 @@ def upload_report(target_path, monitor_url=MONITOR_URL):
         f"{monitor_url.removesuffix('/')}/reports",
     ], capture_output=True)
     if result.returncode:
-        logger.error(f"Error uploading report: {result.stderr}")
-    return result.returncode
+        raise ComplianceMonitorCommError(result.stderr.decode().strip())
 
 
 def download_scores(subject, monitor_url=MONITOR_URL):
     result = subprocess.run([
         shutil.which('curl'),
+        '--fail-with-body', '--no-progress-meter',
         f"{monitor_url.removesuffix('/')}/status?subject={subject}",
     ], capture_output=True)
     if result.returncode:
-        raise RuntimeError(f"could not download scores: {result.stderr}")
+        raise ComplianceMonitorCommError(result.stderr.decode().strip())
     remotescores = json.loads(result.stdout)
     # unfortunately, we have to patch the remote scorecard because json doesn't to datetime
     for sc_att in remotescores.values():
@@ -492,8 +495,17 @@ def enter_report(statepath, report, monitor_url=MONITOR_URL):
     if os.path.exists(report_yaml):
         raise RuntimeError(f"File 'report-{uuid_}.yaml' already exists; report uuid NOT UNIQUE?")
     write_yaml(report_yaml, report)
+    if not os.path.isfile(KEYFILE_PATH):
+        logger.warning(f"Key file not found. Not uploading report {uuid_}")
+        return
     sign_report(report_yaml)
-    upload_report(report_yaml, monitor_url)
+    if not os.path.isfile(TOKENFILE_PATH):
+        logger.warning(f"Token file not found. Not uploading report {uuid_}")
+        return
+    try:
+        upload_report(report_yaml, monitor_url)
+    except ComplianceMonitorCommError as e:
+        logger.warning(f"Couldn't upload report {uuid_}: {e}")
 
 
 def load_report(statepath, uuid_, default=None):
@@ -557,9 +569,13 @@ def prune_reports(statepath, scorecard):
 
 
 def augment_scores(statepath, subject, monitor_url=MONITOR_URL):
-    remotescores = download_scores(subject, monitor_url=MONITOR_URL)
     scorepath = os.path.join(statepath, 'scorecard.yaml')
     scorecard = load_scores(scorepath)
+    try:
+        remotescores = download_scores(subject, monitor_url=MONITOR_URL)
+    except ComplianceMonitorCommError as e:
+        logger.warning(f"Could not download scores: {e}"))
+        return scorecard
     update_scorecard_from_scorecard(scorecard, remotescores)
     write_yaml(scorepath, scorecard)
     return scorecard
