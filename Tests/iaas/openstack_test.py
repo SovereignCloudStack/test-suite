@@ -251,17 +251,14 @@ def run_preflight_checks(container, testcases):
     # the former would lead to each testcase aborting with a marginally useful message;
     # the latter would lead to scs_0116_permissions aborting, which we don't want to single out
     try:
-        try:
-            conn = container.conn
-        except openstack.exceptions.ConfigException:
-            logger.critical("Please make sure that ~/.config/openstack/clouds.yaml exists and is correct!")
-            raise
+        conn = container.conn
         if "member" not in ensure_unprivileged(conn, quiet=True):
-            logger.critical("Please make sure that your OpenStack user has role member.")
             raise RuntimeError("OpenStack user is missing member role.")
     except Exception:
+        logger.critical("Please make sure that ~/.config/openstack/clouds.yaml exists and is correct!", exc_info=True)
         del testcases[:]  # it's no use running any testcases now
         return False
+
     invalid = []
     for testcase in testcases:
         if not testcase.startswith('scs-') and testcase != 'cleanup':
