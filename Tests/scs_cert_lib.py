@@ -574,7 +574,7 @@ def augment_scores(statepath, subject, monitor_url=MONITOR_URL):
     try:
         remotescores = download_scores(subject, monitor_url=MONITOR_URL)
     except ComplianceMonitorCommError as e:
-        logger.warning(f"Could not download scores: {e}"))
+        logger.warning(f"Could not download scores: {e}")
         return scorecard
     update_scorecard_from_scorecard(scorecard, remotescores)
     write_yaml(scorepath, scorecard)
