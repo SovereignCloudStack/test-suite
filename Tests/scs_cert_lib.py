@@ -45,7 +45,7 @@ class LogHandler(logging.Handler):
         self.log = [] if log is None else log
 
     def handle(self, record):
-        self.log.append(f'{record.levelname}: {record.getMessage()}')
+        self.log.append(f'{record.levelname}: {self.format(record)}')
 
 
 def load_env_yaml_section(subject, path=ENVPATH):
