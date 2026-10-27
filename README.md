@@ -1,5 +1,12 @@
 # Testsuite for SCS standards
 
+**NOTE: As of now, this is firmly work in progress. The official repository is still
+[SovereignCloudStack/standards](https://github.com/SovereignCloudStack/standards).**
+
+**NOTE: This project is mostly being developed without the aid of commercial generative AI.
+If you must use 'AI', at least use something that is in line with our values of open source
+and digital sovereignty.**
+
 This test suite has two parts:
 
 - one part for [SCS-compatible IaaS](https://docs.scs.community/standards/scopes/scs-0501),
