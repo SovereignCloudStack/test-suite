@@ -11,9 +11,13 @@ virtualenv .venv
 pip install -r requirements.txt
 
 BATCH="\
-scs2 artcodix-muc artcodix-ro cah-dd8a \
+scs2 \
+artcodix-muc artcodix-ro \
+cah-dd8a \
 pco-prod1 pco-prod2 pco-prod3 pco-prod4 \
-regio-a scaleup-occ2 syseleven-dus2 syseleven-ham1 \
+regio-a \
+scaleup-occ2 scaleup-occ3 \
+syseleven-dus2 syseleven-ham1 \
 "
 # currently not reachable from outside: "cc-rrze",
 
@@ -27,5 +31,5 @@ regio-a scaleup-occ2 syseleven-dus2 syseleven-ham1 \
 ./openstack_test.py aggregate cah-dd8a
 ./openstack_test.py aggregate pco-prod pco-prod1 pco-prod2 pco-prod3 pco-prod4
 ./openstack_test.py aggregate regio-a
-./openstack_test.py aggregate scaleup-occ2
+./openstack_test.py aggregate scaleup-occ2 scaleup-occ3
 ./openstack_test.py aggregate syseleven syseleven-dus2 syseleven-ham1
